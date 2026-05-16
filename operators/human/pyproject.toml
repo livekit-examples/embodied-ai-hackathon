@@ -1,0 +1,21 @@
+[project]
+name = "leslider-human-operator"
+version = "0.1.0"
+description = "Human teleop operator for the leslider robot over livekit-portal. SO-101 leader arm + arrow-key slider drive. No data recording."
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "livekit-portal>=0.2.1",
+    "livekit-api>=0.7",
+    "lerobot[feetech]>=0.5",
+    "lerobot_teleoperator_so101_with_slider",
+    "rerun-sdk>=0.26",
+    "numpy>=1.24",
+    "python-dotenv>=1",
+    "pynput>=1.7",
+]
+
+# Flat script project: run from this directory with:
+#   uv run python human_operator.py
+
+[tool.uv.sources]
+lerobot_teleoperator_so101_with_slider = { git = "https://github.com/pham-tuan-binh/leslider", subdirectory = "packages/lerobot_teleoperator_so101_with_slider" }
