@@ -21,6 +21,10 @@ const API_SECRET = process.env.LIVEKIT_API_SECRET;
 const LIVEKIT_URL = process.env.LIVEKIT_URL;
 const LIVEKIT_ROOM = process.env.LIVEKIT_ROOM;
 
+// Dispatch name registered by the Python orchestrator via
+// `@server.rtc_session(agent_name="orchestrator")`.
+const AGENT_NAME = 'orchestrator';
+
 // don't cache the results
 export const revalidate = 0;
 
@@ -62,10 +66,22 @@ export async function POST(req: Request) {
       await roomClient.createRoom({ name: roomName });
     }
 
-    // Debug: log all agent dispatches currently in the room.
+    // Clear all prior dispatches and create a fresh one so the user always
+    // lands in a room with exactly one freshly-dispatched agent.
     const dispatchClient = new AgentDispatchClient(LIVEKIT_URL, API_KEY, API_SECRET);
-    const dispatches = await dispatchClient.listDispatch(roomName);
-    console.log(`[token] dispatches in room "${roomName}":`, dispatches);
+    const existing = await dispatchClient.listDispatch(roomName);
+    console.log(
+      `[token] room "${roomName}": found ${existing.length} existing dispatch(es), clearing all`
+    );
+    await Promise.all(
+      existing.map(async (d) => {
+        console.log(`[token]   deleting dispatch id=${d.id} agentName=${d.agentName}`);
+        await dispatchClient.deleteDispatch(d.id, roomName);
+      })
+    );
+    console.log(`[token] creating fresh "${AGENT_NAME}" dispatch in "${roomName}"`);
+    const created = await dispatchClient.createDispatch(roomName, AGENT_NAME);
+    console.log(`[token]   created dispatch id=${created.id}`);
 
     const participantToken = await createParticipantToken(
       { identity: participantIdentity, name: participantName },
