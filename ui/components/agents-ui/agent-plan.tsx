@@ -2,6 +2,7 @@
 
 import { memo, useEffect, useMemo, useRef } from 'react';
 import { useTextStream } from '@livekit/components-react';
+import scrollIntoView from 'smooth-scroll-into-view-if-needed';
 import { cn } from '@/lib/shadcn/utils';
 
 const PLAN_TOPIC = 'agent.plan';
@@ -91,8 +92,13 @@ const AgentPlanItem = memo(function AgentPlanItem({
   const ref = useRef<HTMLLIElement>(null);
 
   useEffect(() => {
-    if (!isActive) return;
-    ref.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    if (!isActive || !ref.current) return;
+    scrollIntoView(ref.current, {
+      behavior: 'smooth',
+      block: 'center',
+      duration: 1200,
+      ease: (t) => t * t * (3 - 2 * t),
+    });
   }, [isActive]);
 
   return (
