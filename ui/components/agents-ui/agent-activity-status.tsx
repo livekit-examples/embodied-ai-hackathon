@@ -1,14 +1,48 @@
 'use client';
 
+import { useMemo } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
-import { useAgent } from '@livekit/components-react';
+import { useTextStream } from '@livekit/components-react';
 import { Shimmer } from '@/components/ai-elements/shimmer';
 import { cn } from '@/lib/shadcn/utils';
+
+const ACTIVITY_TOPIC = 'agent.activity';
 
 const ACTIVITY_LABELS: Record<string, string> = {
   planning: 'Planning',
   executing: 'Executing',
 };
+
+export interface AgentActivity {
+  activity: string;
+  detail: string;
+}
+
+const EMPTY_ACTIVITY: AgentActivity = { activity: '', detail: '' };
+
+/**
+ * Subscribes to the `agent.activity` text stream published by the orchestrator
+ * agent's `activity_status` helper and returns the latest `{activity, detail}`
+ * status. Each agent-side `send_text` call produces one entry in `textStreams`
+ * whose `text` field is the full JSON payload of that stream, so reading the
+ * tail of the array yields the current status.
+ */
+export function useAgentActivity(): AgentActivity {
+  const { textStreams } = useTextStream(ACTIVITY_TOPIC);
+  return useMemo(() => {
+    const latest = textStreams[textStreams.length - 1];
+    if (!latest) return EMPTY_ACTIVITY;
+    try {
+      const parsed = JSON.parse(latest.text) as Partial<AgentActivity>;
+      return {
+        activity: parsed.activity ?? '',
+        detail: parsed.detail ?? '',
+      };
+    } catch {
+      return EMPTY_ACTIVITY;
+    }
+  }, [textStreams]);
+}
 
 function formatActivity(activity: string, detail: string): string {
   const label = ACTIVITY_LABELS[activity] ?? activity;
@@ -16,18 +50,16 @@ function formatActivity(activity: string, detail: string): string {
 }
 
 /**
- * Renders the agent's current activity (e.g. "Planning: hand me the hammer") sourced
- * from the `agent.activity` and `agent.activity.detail` participant attributes
- * published by the orchestrator agent's `activity_status` helper.
+ * Renders the agent's current activity (e.g. "Planning: hand me the hammer")
+ * sourced from the `agent.activity` text stream published by the orchestrator
+ * agent's `activity_status` helper.
  *
  * Renders nothing when no activity is set. Uses `AnimatePresence` with
  * `mode="wait"` so the previous label fully exits before the new one enters,
  * yielding a clean crossfade on phase changes.
  */
 export function AgentActivityStatus({ className }: { className?: string }) {
-  const agent = useAgent();
-  const activity = agent.attributes?.['agent.activity'] ?? '';
-  const detail = agent.attributes?.['agent.activity.detail'] ?? '';
+  const { activity, detail } = useAgentActivity();
   const label = activity ? formatActivity(activity, detail) : '';
 
   return (

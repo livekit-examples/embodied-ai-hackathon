@@ -3,7 +3,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { AnimatePresence, type MotionProps, motion } from 'motion/react';
 import { useAgent, useSessionContext, useSessionMessages } from '@livekit/components-react';
-import { AgentActivityStatus } from '@/components/agents-ui/agent-activity-status';
+import { AgentActivityStatus, useAgentActivity } from '@/components/agents-ui/agent-activity-status';
 import { AgentChatTranscript } from '@/components/agents-ui/agent-chat-transcript';
 import {
   AgentControlBar,
@@ -180,9 +180,9 @@ export function AgentSessionView_01({
   const { messages } = useSessionMessages(session);
   const [chatOpen, setChatOpen] = useState(false);
   const scrollAreaRef = useRef<HTMLDivElement>(null);
-  const agent = useAgent();
-  const { state: agentState } = agent;
-  const hasActivity = Boolean(agent.attributes?.['agent.activity']);
+  const { state: agentState } = useAgent();
+  const { activity } = useAgentActivity();
+  const hasActivity = activity !== '';
 
   const controls: AgentControlBarControls = {
     leave: true,

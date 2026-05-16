@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import json
 import logging
 import os
 import textwrap
@@ -169,15 +170,26 @@ _PLANNER_USER_PROMPT_HEADER = textwrap.dedent(
 )
 
 
+# Topic for the activity-status text stream consumed by the frontend.
+_ACTIVITY_TOPIC = "agent.activity"
+
+
+async def _publish_activity(room, activity: str, detail: str) -> None:
+    """Send a single status update as a text stream on `_ACTIVITY_TOPIC`."""
+    payload = json.dumps({"activity": activity, "detail": detail})
+    await room.local_participant.send_text(payload, topic=_ACTIVITY_TOPIC)
+
+
 @asynccontextmanager
 async def activity_status(ctx: RunContext, activity: str, detail: str = ""):
-    """Publish the agent's current activity to the frontend via participant attributes.
+    """Publish the agent's current activity to the frontend via a text stream.
 
-    The frontend reads `agent.activity` (machine-readable phase) and
-    `agent.activity.detail` (human-readable detail) off the agent participant
-    to render a status badge while a tool is running. Empty strings clear
-    the keys (LiveKit treats "" as deletion). The keys are always cleared
-    on exit, including on exceptions or interruptions.
+    Each call to `_publish_activity` sends a one-shot text stream on the
+    `agent.activity` topic carrying `{"activity", "detail"}` JSON. The frontend
+    subscribes via `useTextStream('agent.activity')` and renders a status
+    badge while a tool is running. An empty `activity` is treated as "idle"
+    and clears the badge. The cleared state is always published on exit,
+    including on exceptions or interruptions.
 
     Yields an async `set_detail(new_detail)` callable so callers can update
     the detail line mid-context (e.g. to surface per-step progress) without
@@ -206,25 +218,13 @@ async def activity_status(ctx: RunContext, activity: str, detail: str = ""):
         return
 
     async def set_detail(new_detail: str) -> None:
-        await room.local_participant.set_attributes(
-            {"agent.activity.detail": new_detail}
-        )
+        await _publish_activity(room, activity, new_detail)
 
-    await room.local_participant.set_attributes(
-        {
-            "agent.activity": activity,
-            "agent.activity.detail": detail,
-        }
-    )
+    await _publish_activity(room, activity, detail)
     try:
         yield set_detail
     finally:
-        await room.local_participant.set_attributes(
-            {
-                "agent.activity": "",
-                "agent.activity.detail": "",
-            }
-        )
+        await _publish_activity(room, "", "")
 
 
 class Orchestrator(Agent):
