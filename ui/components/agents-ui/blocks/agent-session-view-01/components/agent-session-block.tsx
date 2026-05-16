@@ -3,6 +3,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { AnimatePresence, type MotionProps, motion } from 'motion/react';
 import { useAgent, useSessionContext, useSessionMessages } from '@livekit/components-react';
+import { AgentActivityStatus } from '@/components/agents-ui/agent-activity-status';
 import { AgentChatTranscript } from '@/components/agents-ui/agent-chat-transcript';
 import {
   AgentControlBar,
@@ -179,7 +180,9 @@ export function AgentSessionView_01({
   const { messages } = useSessionMessages(session);
   const [chatOpen, setChatOpen] = useState(false);
   const scrollAreaRef = useRef<HTMLDivElement>(null);
-  const { state: agentState } = useAgent();
+  const agent = useAgent();
+  const { state: agentState } = agent;
+  const hasActivity = Boolean(agent.attributes?.['agent.activity']);
 
   const controls: AgentControlBarControls = {
     leave: true,
@@ -244,7 +247,7 @@ export function AgentSessionView_01({
         {/* Pre-connect message */}
         {isPreConnectBufferEnabled && (
           <AnimatePresence>
-            {messages.length === 0 && (
+            {messages.length === 0 && !hasActivity && (
               <MotionMessage
                 key="pre-connect-message"
                 duration={2}
@@ -257,6 +260,8 @@ export function AgentSessionView_01({
             )}
           </AnimatePresence>
         )}
+        {/* Tool activity status (e.g. "Planning: ...") */}
+        <AgentActivityStatus />
         <div className="bg-background relative mx-auto max-w-2xl pb-3 md:pb-12">
           <Fade bottom className="absolute inset-x-0 top-0 h-4 -translate-y-full" />
           <AgentControlBar

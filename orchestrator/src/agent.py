@@ -2,6 +2,7 @@ import base64
 import logging
 import os
 import textwrap
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -113,6 +114,34 @@ def _extract_python(text: str) -> str:
     return body.strip()
 
 
+@asynccontextmanager
+async def activity_status(ctx: RunContext, activity: str, detail: str = ""):
+    """Publish the agent's current activity to the frontend via participant attributes.
+
+    The frontend reads `agent.activity` (machine-readable phase) and
+    `agent.activity.detail` (human-readable detail) off the agent participant
+    to render a status badge while a tool is running. Empty strings clear
+    the keys (LiveKit treats "" as deletion). The keys are always cleared
+    on exit, including on exceptions or interruptions.
+    """
+    room = ctx.session.room_io.room
+    await room.local_participant.set_attributes(
+        {
+            "agent.activity": activity,
+            "agent.activity.detail": detail,
+        }
+    )
+    try:
+        yield
+    finally:
+        await room.local_participant.set_attributes(
+            {
+                "agent.activity": "",
+                "agent.activity.detail": "",
+            }
+        )
+
+
 class Orchestrator(Agent):
     def __init__(self) -> None:
         # Dedicated planner LLM used inside tools for vision-based reasoning,
@@ -164,9 +193,10 @@ class Orchestrator(Agent):
             ],
         )
 
-        response = await self._planner_llm.chat(chat_ctx=planner_ctx).collect()
-        code = _extract_python(response.text)
-        logger.info("Generated policy code:\n%s", code)
+        async with activity_status(context, "planning", task_description):
+            response = await self._planner_llm.chat(chat_ctx=planner_ctx).collect()
+            code = _extract_python(response.text)
+            logger.info("Generated policy code:\n%s", code)
 
         # TODO: actually dispatch the generated code to the robot arms.
         return code
