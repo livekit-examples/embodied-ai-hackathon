@@ -23,10 +23,9 @@ from livekit.plugins.turn_detector.multilingual import MultilingualModel
 # Repo-relative path to the toolbench image used as visual context for planning.
 TOOLS_IMAGE_PATH = Path(__file__).resolve().parents[2] / "images" / "tools.jpg"
 # Pre-encode the image once at import time; it's static for the demo.
-TOOLS_IMAGE_DATA_URL = (
-    "data:image/jpeg;base64,"
-    + base64.b64encode(TOOLS_IMAGE_PATH.read_bytes()).decode("utf-8")
-)
+TOOLS_IMAGE_DATA_URL = "data:image/jpeg;base64," + base64.b64encode(
+    TOOLS_IMAGE_PATH.read_bytes()
+).decode("utf-8")
 
 logger = logging.getLogger("agent")
 
@@ -40,17 +39,7 @@ class Assistant(Agent):
         self._planner_llm = inference.LLM(model="openai/gpt-5.2-chat-latest")
 
         super().__init__(
-            # A Large Language Model (LLM) is your agent's brain, processing user input and generating a response
-            # See all available models at https://docs.livekit.io/agents/models/llm/
             llm=inference.LLM(model="openai/gpt-5.2-chat-latest"),
-            # To use a realtime model instead of a voice pipeline, replace the LLM
-            # with a RealtimeModel and remove the STT/TTS from the AgentSession
-            # (Note: This is for the OpenAI Realtime API. For other providers, see https://docs.livekit.io/agents/models/realtime/)
-            # 1. Install livekit-agents[openai]
-            # 2. Set OPENAI_API_KEY in .env.local
-            # 3. Add `from livekit.plugins import openai` to the top of this file
-            # 4. Replace the llm argument with:
-            #     llm=openai.realtime.RealtimeModel(voice="marin")
             instructions=textwrap.dedent(
                 """\
                 You are the toolbench helper, an embodied AI agent equipped with two robotic arms on linear sliders. With these arms,
@@ -104,6 +93,7 @@ class Assistant(Agent):
         # TODO: actually dispatch each step to the robot arms.
         return plan.text
 
+
 server = AgentServer()
 
 
@@ -116,32 +106,21 @@ server.setup_fnc = prewarm
 
 @server.rtc_session(agent_name="my-agent")
 async def my_agent(ctx: JobContext):
-    # Logging setup
-    # Add any other context you want in all log entries here
+
     ctx.log_context_fields = {
         "room": ctx.room.name,
     }
 
-    # Set up a voice AI pipeline using OpenAI, Cartesia, Deepgram, and the LiveKit turn detector
     session = AgentSession(
-        # Speech-to-text (STT) is your agent's ears, turning the user's speech into text that the LLM can understand
-        # See all available models at https://docs.livekit.io/agents/models/stt/
         stt=inference.STT(model="deepgram/nova-3", language="multi"),
-        # Text-to-speech (TTS) is your agent's voice, turning the LLM's text into speech that the user can hear
-        # See all available models as well as voice selections at https://docs.livekit.io/agents/models/tts/
         tts=inference.TTS(
             model="cartesia/sonic-3", voice="9626c31c-bec5-4cca-baa8-f8ba9e84c8bc"
         ),
-        # VAD and turn detection are used to determine when the user is speaking and when the agent should respond
-        # See more at https://docs.livekit.io/agents/build/turns
         turn_detection=MultilingualModel(),
         vad=ctx.proc.userdata["vad"],
-        # allow the LLM to generate a response while waiting for the end of turn
-        # See more at https://docs.livekit.io/agents/build/audio/#preemptive-generation
         preemptive_generation=True,
     )
 
-    # Start the session, which initializes the voice pipeline and warms up the models
     await session.start(
         agent=Assistant(),
         room=ctx.room,
@@ -154,18 +133,6 @@ async def my_agent(ctx: JobContext):
         ),
     )
 
-    # # Add a virtual avatar to the session, if desired
-    # # For other providers, see https://docs.livekit.io/agents/models/avatar/
-    # avatar = anam.AvatarSession(
-    #     persona_config=anam.PersonaConfig(
-    #         name="...",
-    #         avatarId="...",  # See https://docs.livekit.io/agents/models/avatar/plugins/anam
-    #     ),
-    # )
-    # # Start the avatar and wait for it to join
-    # await avatar.start(session, room=ctx.room)
-
-    # Join the room and connect to the user
     await ctx.connect()
 
 
