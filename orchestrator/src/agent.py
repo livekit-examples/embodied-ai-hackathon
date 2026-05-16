@@ -1,10 +1,11 @@
+import asyncio
 import base64
 import logging
 import os
 import textwrap
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Annotated, Literal, Union
+from typing import Annotated, Literal
 
 from dotenv import load_dotenv
 from livekit.agents import (
@@ -59,13 +60,52 @@ class RunPolicy(BaseModel):
     arm: Arm
 
 
-Action = Annotated[Union[MoveTo, RunPolicy], Field(discriminator="kind")]
+Action = Annotated[MoveTo | RunPolicy, Field(discriminator="kind")]
 
 
 class Plan(BaseModel):
     """Ordered list of robot actions that fulfill a task."""
 
     steps: list[Action]
+
+
+# Maps low-level policy names to a human-readable verb for the activity badge.
+_POLICY_VERBS: dict[str, str] = {"pick_up": "Picking up", "put_down": "Putting down"}
+
+# Stub delay per step, simulating arm motion until real RPCs are wired in.
+_STUB_STEP_DURATION_S = 3.0
+
+
+def _describe_step(step: Action) -> str:
+    """Short, human-readable status string for a single plan step."""
+    match step:
+        case MoveTo(arm=arm, object_name=name):
+            return f"Moving {arm} arm to {name}"
+        case RunPolicy(arm=arm, policy=policy):
+            return f"{_POLICY_VERBS[policy]} with {arm} arm"
+
+
+async def _execute_step(step: Action) -> None:
+    """Run a single plan step.
+
+    TODO: replace the sleep with an RPC to the robot worker, e.g.
+        await room.local_participant.perform_rpc(
+            destination_identity="robot",
+            method="execute_step",
+            payload=step.model_dump_json(),
+        )
+    The function signature stays stable when that swap happens.
+    """
+    logger.info("Executing step: %s", step.model_dump_json())
+    await asyncio.sleep(_STUB_STEP_DURATION_S)
+
+
+async def execute_plan(ctx: RunContext, plan: Plan) -> None:
+    """Run each step of `plan` in sequence, surfacing live progress to the frontend."""
+    async with activity_status(ctx, "executing") as set_detail:
+        for step in plan.steps:
+            await set_detail(_describe_step(step))
+            await _execute_step(step)
 
 
 # The planner runs in OpenAI strict structured-output mode against the `Plan`
@@ -139,6 +179,10 @@ async def activity_status(ctx: RunContext, activity: str, detail: str = ""):
     the keys (LiveKit treats "" as deletion). The keys are always cleared
     on exit, including on exceptions or interruptions.
 
+    Yields an async `set_detail(new_detail)` callable so callers can update
+    the detail line mid-context (e.g. to surface per-step progress) without
+    touching room state directly.
+
     In console mode (no RoomIO is wired up), falls back to logging so the
     agent still works locally without a room.
     """
@@ -150,12 +194,21 @@ async def activity_status(ctx: RunContext, activity: str, detail: str = ""):
         room = None
 
     if room is None:
+
+        async def set_detail(new_detail: str) -> None:
+            logger.info("activity[%s]: %s", activity, new_detail or "<no detail>")
+
         logger.info("activity[%s]: %s", activity, detail or "<no detail>")
         try:
-            yield
+            yield set_detail
         finally:
             logger.info("activity[%s]: done", activity)
         return
+
+    async def set_detail(new_detail: str) -> None:
+        await room.local_participant.set_attributes(
+            {"agent.activity.detail": new_detail}
+        )
 
     await room.local_participant.set_attributes(
         {
@@ -164,7 +217,7 @@ async def activity_status(ctx: RunContext, activity: str, detail: str = ""):
         }
     )
     try:
-        yield
+        yield set_detail
     finally:
         await room.local_participant.set_attributes(
             {
@@ -238,8 +291,8 @@ class Orchestrator(Agent):
                 plan.model_dump_json(indent=2),
             )
 
-        # TODO: dispatch each step deterministically against the robot arms,
-        # e.g. via `match step:` over MoveTo / RunPolicy.
+        await execute_plan(context, plan)
+
         return plan.model_dump_json()
 
 
