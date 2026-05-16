@@ -95,20 +95,27 @@ def _describe_step(step: Action) -> str:
 #         payload=step.model_dump_json(),
 #     )
 
-async def _execute_run_policy(step: RunPolicy) -> None:
+async def _execute_run_policy(step: RunPolicy, local_participant) -> None:
+    logger.warning("Not wired to RPC yet")
     await asyncio.sleep(_STUB_STEP_DURATION_S)
 
-async def _execute_move_to(step: MoveTo) -> None:
+async def _execute_move_to(step: MoveTo, local_participant) -> None:
+    logger.warning("Not wired to RPC yet")
     await asyncio.sleep(_STUB_STEP_DURATION_S)
 
-async def _execute_step(step: Action) -> None:
+async def _execute_step(step: Action, room) -> None:
     """Run a single plan step."""
     logger.info("Executing step: %s", step.model_dump_json())
+    if room is None:
+        logger.warning("No room available, falling back to stub sleep")
+        await asyncio.sleep(_STUB_STEP_DURATION_S)
+        return
+    local_participant = room.local_participant
     match step:
         case RunPolicy():
-            await _execute_run_policy(step)
+            await _execute_run_policy(step, local_participant)
         case MoveTo():
-            await _execute_move_to(step)
+            await _execute_move_to(step, local_participant)
 
 async def execute_plan(
     ctx: AsyncRunContext, plan: Plan, pub: "PlanProgress"
@@ -118,11 +125,17 @@ async def execute_plan(
     On success, the publisher is left in `phase: "completed"` so the UI can
     keep the finished list visible until the next plan replaces it.
     """
+    # `session.room_io` raises RuntimeError when running without a room (e.g.
+    # `agent.py console`); the executors handle a None room gracefully.
+    try:
+        room = ctx.session.room_io.room
+    except RuntimeError:
+        room = None
     for i, step in enumerate(plan.steps):
         label = _describe_step(step)
         await pub.set_step_status(i, "in_progress")
         await ctx.update(label)
-        await _execute_step(step)
+        await _execute_step(step, room)
         await pub.set_step_status(i, "completed")
     await pub.set_completed()
 
