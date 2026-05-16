@@ -102,14 +102,16 @@ async def _execute_step(step: Action) -> None:
     await asyncio.sleep(_STUB_STEP_DURATION_S)
 
 
-async def execute_plan(ctx: AsyncRunContext, plan: Plan) -> None:
-    """Run each step of `plan` in sequence, narrating aloud and updating the badge."""
-    async with activity_status(ctx, "executing") as set_detail:
-        for step in plan.steps:
-            label = _describe_step(step)
-            await set_detail(label)
-            await ctx.update(label)
-            await _execute_step(step)
+async def execute_plan(
+    ctx: AsyncRunContext, plan: Plan, pub: "PlanProgress"
+) -> None:
+    """Run each step of `plan` in sequence, flipping per-step status and narrating aloud."""
+    for i, step in enumerate(plan.steps):
+        label = _describe_step(step)
+        await pub.set_step_status(i, "in_progress")
+        await ctx.update(label)
+        await _execute_step(step)
+        await pub.set_step_status(i, "completed")
 
 
 # The planner runs in OpenAI strict structured-output mode against the `Plan`
@@ -173,61 +175,75 @@ _PLANNER_USER_PROMPT_HEADER = textwrap.dedent(
 )
 
 
-# Topic for the activity-status text stream consumed by the frontend.
-_ACTIVITY_TOPIC = "agent.activity"
+# Topic for the plan-progress text stream consumed by the frontend.
+_PLAN_TOPIC = "agent.plan"
+
+StepStatus = Literal["pending", "in_progress", "completed"]
+PlanPhase = Literal["idle", "planning", "executing"]
 
 
-async def _publish_activity(room, activity: str, detail: str) -> None:
-    """Send a single status update as a text stream on `_ACTIVITY_TOPIC`."""
-    payload = json.dumps({"activity": activity, "detail": detail})
-    await room.local_participant.send_text(payload, topic=_ACTIVITY_TOPIC)
+class PlanProgress:
+    """Holds the current plan-progress snapshot and publishes it on every change.
+
+    The whole snapshot is sent on each update; the client just renders the
+    latest payload it received on `_PLAN_TOPIC`. In console mode (no room),
+    snapshots are logged instead.
+    """
+
+    def __init__(self, room) -> None:
+        self._room = room
+        self._phase: PlanPhase = "idle"
+        self._task: str = ""
+        self._steps: list[dict] = []
+
+    async def _publish(self) -> None:
+        payload = json.dumps(
+            {"phase": self._phase, "task": self._task, "steps": self._steps}
+        )
+        if self._room is None:
+            logger.info("plan-progress (console): %s", payload)
+            return
+        await self._room.local_participant.send_text(payload, topic=_PLAN_TOPIC)
+
+    async def set_planning(self, task: str) -> None:
+        self._phase = "planning"
+        self._task = task
+        self._steps = []
+        await self._publish()
+
+    async def set_plan(self, descriptions: list[str]) -> None:
+        self._phase = "executing"
+        self._steps = [{"description": d, "status": "pending"} for d in descriptions]
+        await self._publish()
+
+    async def set_step_status(self, index: int, status: StepStatus) -> None:
+        self._steps[index]["status"] = status
+        await self._publish()
+
+    async def clear(self) -> None:
+        self._phase = "idle"
+        self._task = ""
+        self._steps = []
+        await self._publish()
 
 
 @asynccontextmanager
-async def activity_status(ctx: RunContext, activity: str, detail: str = ""):
-    """Publish the agent's current activity to the frontend via a text stream.
+async def plan_progress(ctx: RunContext):
+    """Yield a `PlanProgress` and clear it on exit (success, error, or cancel).
 
-    Each call to `_publish_activity` sends a one-shot text stream on the
-    `agent.activity` topic carrying `{"activity", "detail"}` JSON. The frontend
-    subscribes via `useTextStream('agent.activity')` and renders a status
-    badge while a tool is running. An empty `activity` is treated as "idle"
-    and clears the badge. The cleared state is always published on exit,
-    including on exceptions or interruptions.
-
-    Yields an async `set_detail(new_detail)` callable so callers can update
-    the detail line mid-context (e.g. to surface per-step progress) without
-    touching room state directly.
-
-    In console mode (no RoomIO is wired up), falls back to logging so the
-    agent still works locally without a room.
+    `session.room_io` raises RuntimeError when the session was started without
+    a room (e.g. `agent.py console`); in that case the publisher falls back
+    to logging so the agent still works locally.
     """
-    # `session.room_io` raises RuntimeError when the session was started without
-    # a room (e.g. `agent.py console`); fall back to logging in that case.
     try:
         room = ctx.session.room_io.room
     except RuntimeError:
         room = None
-
-    if room is None:
-
-        async def set_detail(new_detail: str) -> None:
-            logger.info("activity[%s]: %s", activity, new_detail or "<no detail>")
-
-        logger.info("activity[%s]: %s", activity, detail or "<no detail>")
-        try:
-            yield set_detail
-        finally:
-            logger.info("activity[%s]: done", activity)
-        return
-
-    async def set_detail(new_detail: str) -> None:
-        await _publish_activity(room, activity, new_detail)
-
-    await _publish_activity(room, activity, detail)
+    pub = PlanProgress(room)
     try:
-        yield set_detail
+        yield pub
     finally:
-        await _publish_activity(room, "", "")
+        await pub.clear()
 
 
 class PlannerToolset(AsyncToolset):
@@ -272,7 +288,9 @@ class PlannerToolset(AsyncToolset):
             ],
         )
 
-        async with activity_status(ctx, "planning", task_description):
+        async with plan_progress(ctx) as pub:
+            await pub.set_planning(task_description)
+
             response = await self._planner_llm.chat(
                 chat_ctx=planner_ctx,
                 response_format=Plan,
@@ -284,7 +302,9 @@ class PlannerToolset(AsyncToolset):
                 plan.model_dump_json(indent=2),
             )
 
-        await execute_plan(ctx, plan)
+            await pub.set_plan([_describe_step(s) for s in plan.steps])
+            await execute_plan(ctx, plan, pub)
+
         return f"Completed: {task_description}"
 
 

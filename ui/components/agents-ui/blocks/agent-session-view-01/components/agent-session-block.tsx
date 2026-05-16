@@ -3,7 +3,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { AnimatePresence, type MotionProps, motion } from 'motion/react';
 import { useAgent, useSessionContext, useSessionMessages } from '@livekit/components-react';
-import { AgentActivityStatus, useAgentActivity } from '@/components/agents-ui/agent-activity-status';
+import { AgentPlanView, useAgentPlan } from '@/components/agents-ui/agent-plan';
 import { AgentChatTranscript } from '@/components/agents-ui/agent-chat-transcript';
 import {
   AgentControlBar,
@@ -181,8 +181,8 @@ export function AgentSessionView_01({
   const [chatOpen, setChatOpen] = useState(false);
   const scrollAreaRef = useRef<HTMLDivElement>(null);
   const { state: agentState } = useAgent();
-  const { activity } = useAgentActivity();
-  const hasActivity = activity !== '';
+  const { phase } = useAgentPlan();
+  const hasActivity = phase !== 'idle';
 
   const controls: AgentControlBarControls = {
     leave: true,
@@ -260,8 +260,8 @@ export function AgentSessionView_01({
             )}
           </AnimatePresence>
         )}
-        {/* Tool activity status (e.g. "Planning: ...") */}
-        <AgentActivityStatus />
+        {/* Plan + per-step status (numbered list during execution) */}
+        <AgentPlanView />
         <div className="bg-background relative mx-auto max-w-2xl pb-3 md:pb-12">
           <Fade bottom className="absolute inset-x-0 top-0 h-4 -translate-y-full" />
           <AgentControlBar
