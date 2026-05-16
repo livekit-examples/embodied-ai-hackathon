@@ -12,10 +12,10 @@ from livekit.plugins import silero
 
 load_dotenv()
 
-logger = logging.getLogger("vision-agent")
+logger = logging.getLogger("control-agent")
 logger.setLevel(logging.INFO)
 
-class VisionAgent(Agent):
+class ControlAgent(Agent):
     def __init__(self) -> None:
         self._latest_frame = None
         self._video_stream = None
@@ -142,7 +142,7 @@ async def entrypoint(ctx: JobContext):
         preemptive_generation=True,
     )
 
-    await session.start(agent=VisionAgent(), room=ctx.room)
+    await session.start(agent=ControlAgent(), room=ctx.room)
     await ctx.connect()
 
 if __name__ == "__main__":
