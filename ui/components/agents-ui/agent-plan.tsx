@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo } from 'react';
+import { memo, useMemo } from 'react';
 import { useTextStream } from '@livekit/components-react';
 import { cn } from '@/lib/shadcn/utils';
 
@@ -82,16 +82,22 @@ function AgentPlanList({ steps }: { steps: PlanStep[] }) {
   );
 }
 
-function AgentPlanItem({
+const AgentPlanItem = memo(function AgentPlanItem({
   index,
   description,
   status,
 }: PlanStep & { index: number }) {
+  const isActive = status === 'in_progress';
   return (
-    <li className="flex items-baseline gap-2">
-      <span className="text-foreground/60 font-mono min-w-8 text-right">{`${index}.`}</span>
+    <li
+      className={cn(
+        'flex items-baseline gap-2 transition-opacity duration-1000 ease-in-out will-change-[opacity]',
+        isActive ? 'opacity-100' : 'opacity-40'
+      )}
+    >
+      <span className="font-mono min-w-8 text-right">{`${index}.`}</span>
       <span className="flex-1">{description}</span>
       <span className="opacity-20">({STATUS_LABEL[status]})</span>
     </li>
   );
-}
+});
