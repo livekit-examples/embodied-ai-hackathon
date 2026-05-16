@@ -25,6 +25,7 @@ from livekit.agents.llm import ChatContext, ImageContent
 from livekit.agents.llm.async_toolset import AsyncRunContext, AsyncToolset
 from livekit.plugins import ai_coustics, silero
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
+from livekit.rtc.rpc import RpcError
 from pydantic import BaseModel, Field
 
 # Repo-relative path to the toolbench image used as visual context for planning.
@@ -118,9 +119,9 @@ async def _execute_step(step: Action, room) -> None:
                 await _execute_run_policy(step, local_participant)
             case MoveTo():
                 await _execute_move_to(step, local_participant)
-    except Exception as e:
-        logger.error("Error executing step: %s", e)
-        raise
+    except RpcError as e:
+        # This will occur if the operator participant isn't connected.
+        logger.warning("RPC failed for step %s: %s", step.kind, e)
 
 
 async def execute_plan(ctx: AsyncRunContext, plan: Plan, pub: "PlanProgress") -> None:
