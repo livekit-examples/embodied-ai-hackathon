@@ -11,11 +11,13 @@ that:
   3. Runs a tick-rate control loop:
      - Detects an AprilTag (the slider's fiducial) in the overhead
        frame.
-     - Compares the tag's pixel-Y to the target object's pixel-Y.
+     - Compares the tag's pixel-X to the target object's pixel-X.
+       (The overhead camera is mounted rotated 90 degrees, so the
+       slider's travel axis runs left/right in the image.)
      - Sends one Portal action per tick: 6 arm ``.pos`` mirrored from
        the latest observed state, plus ``slider.vel`` set to a small
        signed constant.
-  4. Stops when ``|tag_y - target_y|`` is within the threshold
+  4. Stops when ``|tag_x - target_x|`` is within the threshold
      (success), the AprilTag is missing too long (tag-lost), or the
      timeout elapses.
   5. Sends ``slider.vel = 0`` and releases active operator before
@@ -40,13 +42,18 @@ Environment knobs (in addition to LIVEKIT_* and MOONDREAM_API_KEY):
 * ``SLIDER_MOVE_VELOCITY``    raw motor units; default ``800``
                               (within the leslider's MIN/MAX teleop
                               velocity).
-* ``SLIDER_MOVE_THRESHOLD_PX`` pixel tolerance on Y; default ``20``.
+* ``SLIDER_MOVE_THRESHOLD_PX`` pixel tolerance on X; default ``20``.
 * ``SLIDER_MOVE_TIMEOUT_S``   loop timeout in seconds; default ``15``.
 * ``SLIDER_TAG_MISS_LIMIT``   consecutive ticks without a tag before
                               giving up; default ``30`` (~1s @ 30Hz).
 * ``SLIDER_VEL_INVERT``       flip the sign of ``slider.vel`` once if
                               the rig drives the wrong way; default
                               ``false``.
+* ``SLIDER_TAG_OFFSET_X_PX``  signed pixel offset from the AprilTag
+                              center to the gripper center along the
+                              image X axis; added to the tag's X so
+                              the gripper (not the tag) lands on the
+                              target. Default ``0``.
 
 Usage::
 
@@ -62,7 +69,7 @@ Then from any peer in the same room::
     #             "target": {"x": 0.43, "y": 0.61,
     #                        "width": 640, "height": 480},
     #             "reached": true, "iterations": 47,
-    #             "elapsed_s": 1.57, "final_tag_y_px": 291.2,
+    #             "elapsed_s": 1.57, "final_tag_x_px": 291.2,
     #             "reason": "reached"}'
 """
 from __future__ import annotations
@@ -156,6 +163,7 @@ async def main() -> None:
     move_timeout_s = env_int("SLIDER_MOVE_TIMEOUT_S", 15)
     tag_miss_limit = env_int("SLIDER_TAG_MISS_LIMIT", 30)
     vel_invert = env_bool("SLIDER_VEL_INVERT", default=False)
+    tag_offset_x_px = env_int("SLIDER_TAG_OFFSET_X_PX", 0)
     tag_family = env_str("SLIDER_APRILTAG_FAMILY", "tagStandard41h12")
     raw_tag_id = os.environ.get("SLIDER_APRILTAG_ID", "").strip()
     want_tag_id: Optional[int] = int(raw_tag_id) if raw_tag_id else None
@@ -266,10 +274,10 @@ async def main() -> None:
         p = points[0]
         target_xn = float(p["x"])
         target_yn = float(p["y"])
-        target_y_px = target_yn * h
+        target_x_px = target_xn * w
         print(
             f"[move-to-op] move_to('{description}') -> "
-            f"target=({target_xn:.3f},{target_yn:.3f}) y_px={target_y_px:.1f}"
+            f"target=({target_xn:.3f},{target_yn:.3f}) x_px={target_x_px:.1f}"
         )
 
         # One mover at a time. Queueing here is preferable to
@@ -284,7 +292,7 @@ async def main() -> None:
             reason = "timeout"
             iterations = 0
             consecutive_misses = 0
-            final_tag_y_px: Optional[float] = None
+            final_tag_x_px: Optional[float] = None
             t0 = time.monotonic()
 
             try:
@@ -311,24 +319,33 @@ async def main() -> None:
                             break
                         continue
                     consecutive_misses = 0
-                    final_tag_y_px = tag[1]
+                    final_tag_x_px = tag[0]
 
-                    delta_y_px = tag[1] - target_y_px
-                    if abs(delta_y_px) < move_threshold_px:
+                    # The AprilTag is mounted on the slider but not
+                    # exactly above the gripper, so we shift the
+                    # tag's X by a configured pixel offset to get
+                    # the gripper's effective image-space X. Drive
+                    # that, not the raw tag center, to the target.
+                    gripper_x_px = tag[0] + tag_offset_x_px
+                    delta_x_px = gripper_x_px - target_x_px
+                    if abs(delta_x_px) < move_threshold_px:
                         reached = True
                         reason = "reached"
                         break
 
                     # Bang-bang: a single magnitude, sign chosen by
-                    # which side of the target the tag is on. On this
-                    # rig positive `slider.vel` drives the tag DOWN
-                    # on the overhead image (increasing pixel Y), so
-                    # when the tag is above the target (delta_y_px <
-                    # 0) we send a positive velocity to push it down
-                    # toward the target. SLIDER_VEL_INVERT lets a
-                    # different rig flip the convention without code
-                    # changes.
-                    direction = -1.0 if delta_y_px > 0 else 1.0
+                    # which side of the target the tag is on. The
+                    # overhead camera is rotated 90 degrees, so the
+                    # slider's travel axis runs left/right in the
+                    # image. On this rig, positive `slider.vel`
+                    # drives the tag toward DECREASING pixel X, so
+                    # when the tag is to the right of the target
+                    # (delta_x_px > 0) we send a positive velocity
+                    # to push it left toward the target.
+                    # SLIDER_VEL_INVERT lets a different rig (or
+                    # opposite camera rotation) flip the convention
+                    # without code changes.
+                    direction = 1.0 if delta_x_px > 0 else -1.0
                     if vel_invert:
                         direction = -direction
                     vel = direction * move_velocity
@@ -346,8 +363,9 @@ async def main() -> None:
                     if iterations % fps == 0:
                         print(
                             f"[move-to-op] tick {iterations:>4}: "
-                            f"tag_y={tag[1]:.1f} target_y={target_y_px:.1f} "
-                            f"delta={delta_y_px:+.1f} vel={vel:+.0f}"
+                            f"tag_x={tag[0]:.1f} grip_x={gripper_x_px:.1f} "
+                            f"target_x={target_x_px:.1f} "
+                            f"delta={delta_x_px:+.1f} vel={vel:+.0f}"
                         )
             finally:
                 # Always brake and release control. If we hit an
@@ -386,7 +404,7 @@ async def main() -> None:
                 "reason": reason,
                 "iterations": iterations,
                 "elapsed_s": elapsed_s,
-                "final_tag_y_px": final_tag_y_px,
+                "final_tag_x_px": final_tag_x_px,
             })
 
     op.register_rpc_method("move_to", move_to)
