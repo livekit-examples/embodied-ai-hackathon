@@ -1,0 +1,18 @@
+[project]
+name = "move-to-operator"
+version = "0.1.0"
+description = "Perception-only `move_to` operator: joins a Portal room, watches the overhead camera, and answers move_to(description) RPCs by asking Moondream Cloud where the described object is in the latest frame."
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "livekit-portal>=0.2.1",
+    "livekit-api>=0.7",
+    "moondream>=0.1",
+    "numpy>=1.24",
+    "opencv-python>=4.5",
+    "pillow>=10",
+    "pupil-apriltags>=1.0.4",
+    "python-dotenv>=1",
+]
+
+# Flat layout: `uv run move_to_operator.py` from this directory. No CLI,
+# no package, no wheel — the script is the example.
