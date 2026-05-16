@@ -57,7 +57,7 @@ Usage::
 Then from any peer in the same room::
 
     result = await op.perform_rpc("move_to", "blue cube",
-                                   destination="move_to_operator")
+                                   destination="move-to-operator")
     # result -> '{"description": "blue cube",
     #             "target": {"x": 0.43, "y": 0.61,
     #                        "width": 640, "height": 480},
@@ -100,9 +100,9 @@ from _common import (
     required_env,
 )
 
-IDENTITY = "move_to_operator"
+IDENTITY = "move-to-operator"
 CAMERA = "overhead_camera"
-CONFIG_PATH = pathlib.Path(__file__).parent / "portal.yaml"
+CONFIG_PATH = pathlib.Path(__file__).resolve().parent.parent.parent / "portal.yaml"
 
 # 6 arm motor positions, in the wire order from portal.yaml. The 7th
 # state field (`slider.vel`) is not mirrored — we drive it.

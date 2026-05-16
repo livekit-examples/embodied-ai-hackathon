@@ -1,0 +1,11 @@
+# Patterns for scripts/deploy_to_robot.sh. Same syntax as .gitignore.
+
+.git/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.DS_Store
+.env.local
