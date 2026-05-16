@@ -87,20 +87,28 @@ def _describe_step(step: Action) -> str:
             return f"{_POLICY_VERBS[policy]} with {arm} arm"
 
 
-async def _execute_step(step: Action) -> None:
-    """Run a single plan step.
 
-    TODO: replace the sleep with an RPC to the robot worker, e.g.
-        await room.local_participant.perform_rpc(
-            destination_identity="robot",
-            method="execute_step",
-            payload=step.model_dump_json(),
-        )
-    The function signature stays stable when that swap happens.
-    """
-    logger.info("Executing step: %s", step.model_dump_json())
+# TODO: replace the sleep with an RPC to the robot worker, e.g.
+#     await room.local_participant.perform_rpc(
+#         destination_identity="robot",
+#         method="execute_step",
+#         payload=step.model_dump_json(),
+#     )
+
+async def _execute_run_policy(step: RunPolicy) -> None:
     await asyncio.sleep(_STUB_STEP_DURATION_S)
 
+async def _execute_move_to(step: MoveTo) -> None:
+    await asyncio.sleep(_STUB_STEP_DURATION_S)
+
+async def _execute_step(step: Action) -> None:
+    """Run a single plan step."""
+    logger.info("Executing step: %s", step.model_dump_json())
+    match step:
+        case RunPolicy():
+            await _execute_run_policy(step)
+        case MoveTo():
+            await _execute_move_to(step)
 
 async def execute_plan(
     ctx: AsyncRunContext, plan: Plan, pub: "PlanProgress"
