@@ -2,6 +2,7 @@
 
 import { memo, useEffect, useMemo, useRef } from 'react';
 import { useTextStream } from '@livekit/components-react';
+import { AnimatePresence, motion } from 'motion/react';
 import scrollIntoView from 'smooth-scroll-into-view-if-needed';
 import { Fade } from '@/components/agents-ui/blocks/agent-session-view-01/components/agent-session-block';
 import { cn } from '@/lib/shadcn/utils';
@@ -67,9 +68,31 @@ export function AgentPlanView({ className }: { className?: string }) {
 
   return (
     <div className={cn('mx-auto w-full max-w-2xl pb-8 text-xl', className)}>
-      {phase === 'planning' && <p>Planning{task ? `: ${task}` : '...'}</p>}
-      {phase === 'completed' && <p className="font-semibold">Done!</p>}
-      {showList && <AgentPlanList steps={steps} />}
+      <AnimatePresence mode="wait" initial={false}>
+        {phase === 'planning' && (
+          <motion.p
+            key="planning"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.4, ease: 'easeInOut' }}
+          >
+            Planning{task ? `: ${task}` : '...'}
+          </motion.p>
+        )}
+        {showList && (
+          <motion.div
+            key="list"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.4, ease: 'easeInOut' }}
+          >
+            {phase === 'completed' && <p className="font-semibold">Done!</p>}
+            <AgentPlanList steps={steps} />
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
