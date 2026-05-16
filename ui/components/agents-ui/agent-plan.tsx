@@ -1,6 +1,6 @@
 'use client';
 
-import { memo, useMemo } from 'react';
+import { memo, useEffect, useMemo, useRef } from 'react';
 import { useTextStream } from '@livekit/components-react';
 import { cn } from '@/lib/shadcn/utils';
 
@@ -88,8 +88,16 @@ const AgentPlanItem = memo(function AgentPlanItem({
   status,
 }: PlanStep & { index: number }) {
   const isActive = status === 'in_progress';
+  const ref = useRef<HTMLLIElement>(null);
+
+  useEffect(() => {
+    if (!isActive) return;
+    ref.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }, [isActive]);
+
   return (
     <li
+      ref={ref}
       className={cn(
         'flex items-baseline gap-2 transition-opacity duration-1000 ease-in-out will-change-[opacity]',
         isActive ? 'opacity-100' : 'opacity-40'
