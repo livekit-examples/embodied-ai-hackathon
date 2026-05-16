@@ -16,8 +16,9 @@ dependencies = [
     "einops>=0.8,<0.9",
     "peft>=0.18,<1",
     "transformers>=5.4,<5.6",
+    "requests>=2.31,<3",
 ]
 
 # Flat script project: run from this directory with:
-#   uv run python inference.py
+#   uv run python molmo_operator.py
 #   uv run python smoke_test.py
