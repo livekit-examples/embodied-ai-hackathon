@@ -95,7 +95,7 @@ export default async function RootLayout({ children }: RootLayoutProps) {
                 href="https://docs.livekit.io/agents"
                 className="underline underline-offset-4"
               >
-                LiveKit Agents
+                LiveKit
               </a>
             </span>
           </header>

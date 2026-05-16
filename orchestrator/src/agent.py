@@ -216,10 +216,10 @@ async def orchestrator(ctx: JobContext):
     # Dev shortcut: simulate a user utterance at launch so we can iterate on
     # plan_and_execute without speaking into a mic each time. Set the env var
     # to any prompt, e.g. DEV_SIMULATE_PROMPT="pick up the red screwdriver".
-    dev_prompt = os.getenv("DEV_SIMULATE_PROMPT")
-    if dev_prompt:
-        logger.info("DEV_SIMULATE_PROMPT set, simulating user input: %r", dev_prompt)
-        session.generate_reply(user_input=dev_prompt)
+    # dev_prompt = os.getenv("DEV_SIMULATE_PROMPT")
+    # if dev_prompt:
+    #     logger.info("DEV_SIMULATE_PROMPT set, simulating user input: %r", dev_prompt)
+    #     session.generate_reply(user_input=dev_prompt)
 
 
 if __name__ == "__main__":
