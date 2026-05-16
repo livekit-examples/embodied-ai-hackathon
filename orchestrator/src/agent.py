@@ -138,8 +138,25 @@ async def activity_status(ctx: RunContext, activity: str, detail: str = ""):
     to render a status badge while a tool is running. Empty strings clear
     the keys (LiveKit treats "" as deletion). The keys are always cleared
     on exit, including on exceptions or interruptions.
+
+    In console mode (no RoomIO is wired up), falls back to logging so the
+    agent still works locally without a room.
     """
-    room = ctx.session.room_io.room
+    # `session.room_io` raises RuntimeError when the session was started without
+    # a room (e.g. `agent.py console`); fall back to logging in that case.
+    try:
+        room = ctx.session.room_io.room
+    except RuntimeError:
+        room = None
+
+    if room is None:
+        logger.info("activity[%s]: %s", activity, detail or "<no detail>")
+        try:
+            yield
+        finally:
+            logger.info("activity[%s]: done", activity)
+        return
+
     await room.local_participant.set_attributes(
         {
             "agent.activity": activity,
