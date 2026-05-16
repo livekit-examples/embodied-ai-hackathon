@@ -369,7 +369,7 @@ async def orchestrator(ctx: JobContext):
     }
 
     session = AgentSession(
-        stt=inference.STT(model="deepgram/nova-3", language="multi"),
+        stt=inference.STT(model="deepgram/nova-3", language="en-US"),
         tts=inference.TTS(
             model="cartesia/sonic-3", voice="9626c31c-bec5-4cca-baa8-f8ba9e84c8bc"
         ),
