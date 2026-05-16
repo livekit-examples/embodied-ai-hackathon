@@ -44,8 +44,8 @@ action_subscription: true
 #     frames are required.
 #   raw: uncompressed RGB24. Largest payload; rarely justified.
 videos:
-  - { name: arm_camera,      codec: h264, quality: 90 }
-  - { name: overhead_camera, codec: h264, quality: 90 }
+  - { name: arm_camera,      codec: mjpeg, quality: 90 }
+  - { name: overhead_camera, codec: mjpeg, quality: 90 }
 
 # 6 arm motor positions + 1 slider velocity.
 state:
