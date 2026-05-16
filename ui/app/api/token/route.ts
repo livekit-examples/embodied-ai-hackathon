@@ -1,5 +1,11 @@
 import { NextResponse } from 'next/server';
-import { AccessToken, type AccessTokenOptions, type VideoGrant } from 'livekit-server-sdk';
+import {
+  AccessToken,
+  AgentDispatchClient,
+  RoomServiceClient,
+  type AccessTokenOptions,
+  type VideoGrant,
+} from 'livekit-server-sdk';
 import { RoomConfiguration } from '@livekit/protocol';
 
 type ConnectionDetails = {
@@ -46,6 +52,20 @@ export async function POST(req: Request) {
     const participantName = 'user';
     const participantIdentity = `voice_assistant_user_${Math.floor(Math.random() * 10_000)}`;
     const roomName = LIVEKIT_ROOM ?? `voice_assistant_room_${Math.floor(Math.random() * 10_000)}`;
+
+    // Ensure the room exists before touching agent-dispatch APIs — those
+    // 404 on rooms that haven't been created yet.
+    const roomClient = new RoomServiceClient(LIVEKIT_URL, API_KEY, API_SECRET);
+    const rooms = await roomClient.listRooms([roomName]);
+    if (rooms.length === 0) {
+      console.log("Room doesn't exist yet, creating");
+      await roomClient.createRoom({ name: roomName });
+    }
+
+    // Debug: log all agent dispatches currently in the room.
+    const dispatchClient = new AgentDispatchClient(LIVEKIT_URL, API_KEY, API_SECRET);
+    const dispatches = await dispatchClient.listDispatch(roomName);
+    console.log(`[token] dispatches in room "${roomName}":`, dispatches);
 
     const participantToken = await createParticipantToken(
       { identity: participantIdentity, name: participantName },
