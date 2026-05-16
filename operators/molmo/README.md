@@ -36,10 +36,10 @@ uv run python smoke_test.py --model /local/path/to/checkpoint
 ## Live inference
 
 ```bash
-uv run python inference.py
+uv run python molmo_operator.py
 ```
 
-The policy joins the configured LiveKit room as `policy-molmo`. The teleop side
+The policy joins the configured LiveKit room as `run-molmo-operator`. The teleop side
 gates handoff by cycling the active operator with `c`. Molmo predicts the
 6-DOF SO-101 arm action; this wrapper appends `slider.vel = 0.0` so the linear
 slider parks while the arm runs autonomously.
@@ -47,8 +47,8 @@ slider parks while the arm runs autonomously.
 Useful environment overrides:
 
 ```bash
-LESLIDER_TASK="Pick the blue cube up and hold it" uv run python inference.py
-MOLMO_NUM_STEPS=20 MOLMO_DTYPE=bfloat16 uv run python inference.py
+LESLIDER_TASK="Pick the blue cube up and hold it" uv run python molmo_operator.py
+MOLMO_NUM_STEPS=20 MOLMO_DTYPE=bfloat16 uv run python molmo_operator.py
 ```
 
 ## Cloud
@@ -71,4 +71,4 @@ scripts/launch_inference.sh
 
 For live inference, `skypilot/inference.yaml` mounts `.env` to the cloud VM as
 `~/.leslider-molmo.env`, copies it into the workdir at runtime, then runs
-`uv run python inference.py`.
+`uv run python molmo_operator.py`.

@@ -142,7 +142,14 @@ async def main() -> None:
             # Drive the wire. Always send, even when not active; the
             # robot's gate drops mismatched-sender actions, and keeping
             # the leader in sync means takeover is instant.
-            op.send_action(leader.get_action(), timestamp_us=int(time.time() * 1_000_000))
+            leader_action = leader.get_action()
+            op.send_action(leader_action, timestamp_us=int(time.time() * 1_000_000))
+
+            if tick % fps == 0:
+                pairs = ", ".join(
+                    f"{k}={float(v):+.2f}" for k, v in leader_action.items()
+                )
+                print(f"[human] leader action: {pairs}")
 
             log_observation(latest_obs, latest_state, latest_frames)
             log_action(latest_executed, me)

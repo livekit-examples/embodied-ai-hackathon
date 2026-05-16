@@ -8,7 +8,7 @@ reference inputs as the canonical "known good" forward pass:
   * downloads the two sample Realsense frames the model card ships
   * uses the model card's sample 6-DOF state + lemon-bowl task
   * synthesizes a rig-style 7-dim observation (slider.vel=0) and
-    runs it through the *real* helpers from `inference.py`
+    runs it through the *real* helpers from `molmo_operator.py`
     (`_build_policy_state`, `MolmoActChunkRunner`,
     `_action_dict_from_vec`), so the slider-strip / chunk consumption
     / slider-passthrough code paths are exercised
@@ -43,7 +43,7 @@ from transformers import AutoModelForImageTextToText, AutoProcessor
 # helpers move or change shape, this test breaks loudly — which is the
 # point.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from inference import (  # noqa: E402
+from molmo_operator import (  # noqa: E402
     POLICY_STATE_KEYS,
     RIG_ACTION_KEYS,
     SLIDER_KEY,
@@ -157,7 +157,7 @@ def main() -> int:
     side_rgb = Image.open(side_path).convert("RGB")
     print(f"[smoke] top={top_rgb.size}  side={side_rgb.size}")
 
-    # 2. Load processor + model. Same path inference.py uses.
+    # 2. Load processor + model. Same path molmo_operator.py uses.
     print("[smoke] loading processor ...")
     processor = AutoProcessor.from_pretrained(args.model, trust_remote_code=True)
     print("[smoke] loading model (first call downloads the checkpoint) ...")
