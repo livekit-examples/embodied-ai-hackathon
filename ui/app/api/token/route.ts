@@ -1,11 +1,5 @@
 import { NextResponse } from 'next/server';
-import {
-  AccessToken,
-  AgentDispatchClient,
-  RoomServiceClient,
-  type AccessTokenOptions,
-  type VideoGrant,
-} from 'livekit-server-sdk';
+import { AccessToken, type AccessTokenOptions, type VideoGrant } from 'livekit-server-sdk';
 import { RoomConfiguration } from '@livekit/protocol';
 
 type ConnectionDetails = {
@@ -20,10 +14,6 @@ const API_KEY = process.env.LIVEKIT_API_KEY;
 const API_SECRET = process.env.LIVEKIT_API_SECRET;
 const LIVEKIT_URL = process.env.LIVEKIT_URL;
 const LIVEKIT_ROOM = process.env.LIVEKIT_ROOM;
-
-// Dispatch name registered by the Python orchestrator via
-// `@server.rtc_session(agent_name="orchestrator")`.
-const AGENT_NAME = 'orchestrator';
 
 // don't cache the results
 export const revalidate = 0;
@@ -56,32 +46,6 @@ export async function POST(req: Request) {
     const participantName = 'user';
     const participantIdentity = `voice_assistant_user_${Math.floor(Math.random() * 10_000)}`;
     const roomName = LIVEKIT_ROOM ?? `voice_assistant_room_${Math.floor(Math.random() * 10_000)}`;
-
-    // Ensure the room exists before touching agent-dispatch APIs — those
-    // 404 on rooms that haven't been created yet.
-    const roomClient = new RoomServiceClient(LIVEKIT_URL, API_KEY, API_SECRET);
-    const rooms = await roomClient.listRooms([roomName]);
-    if (rooms.length === 0) {
-      console.log("Room doesn't exist yet, creating");
-      await roomClient.createRoom({ name: roomName });
-    }
-
-    // Clear all prior dispatches and create a fresh one so the user always
-    // lands in a room with exactly one freshly-dispatched agent.
-    const dispatchClient = new AgentDispatchClient(LIVEKIT_URL, API_KEY, API_SECRET);
-    const existing = await dispatchClient.listDispatch(roomName);
-    console.log(
-      `[token] room "${roomName}": found ${existing.length} existing dispatch(es), clearing all`
-    );
-    await Promise.all(
-      existing.map(async (d) => {
-        console.log(`[token]   deleting dispatch id=${d.id} agentName=${d.agentName}`);
-        await dispatchClient.deleteDispatch(d.id, roomName);
-      })
-    );
-    console.log(`[token] creating fresh "${AGENT_NAME}" dispatch in "${roomName}"`);
-    const created = await dispatchClient.createDispatch(roomName, AGENT_NAME);
-    console.log(`[token]   created dispatch id=${created.id}`);
 
     const participantToken = await createParticipantToken(
       { identity: participantIdentity, name: participantName },

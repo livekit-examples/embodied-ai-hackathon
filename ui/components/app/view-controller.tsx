@@ -36,6 +36,13 @@ export function ViewController({ appConfig }: ViewControllerProps) {
   const { isConnected, start } = useSessionContext();
   const { resolvedTheme } = useTheme();
 
+  const handleStart = () => {
+    void fetch('/api/dispatch', { method: 'POST' }).catch((e) =>
+      console.warn('[dispatch] request failed', e)
+    );
+    start();
+  };
+
   return (
     <AnimatePresence mode="wait">
       {/* Welcome view */}
@@ -44,7 +51,7 @@ export function ViewController({ appConfig }: ViewControllerProps) {
           key="welcome"
           {...VIEW_MOTION_PROPS}
           startButtonText={appConfig.startButtonText}
-          onStartCall={start}
+          onStartCall={handleStart}
         />
       )}
       {/* Session view */}
