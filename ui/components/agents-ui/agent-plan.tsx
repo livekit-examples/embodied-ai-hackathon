@@ -7,7 +7,7 @@ import { cn } from '@/lib/shadcn/utils';
 const PLAN_TOPIC = 'agent.plan';
 
 export type StepStatus = 'pending' | 'in_progress' | 'completed';
-export type PlanPhase = 'idle' | 'planning' | 'executing';
+export type PlanPhase = 'idle' | 'planning' | 'executing' | 'completed';
 
 export interface PlanStep {
   description: string;
@@ -61,10 +61,13 @@ export function AgentPlanView({ className }: { className?: string }) {
   const { phase, task, steps } = useAgentPlan();
   if (phase === 'idle') return null;
 
+  const showList = phase === 'executing' || phase === 'completed';
+
   return (
     <div className={cn('mx-auto w-full max-w-2xl pb-4 text-sm', className)}>
       {phase === 'planning' && <p>Planning{task ? `: ${task}` : '...'}</p>}
-      {phase === 'executing' && (
+      {phase === 'completed' && <p className="font-semibold">Done!</p>}
+      {showList && (
         <ol className="list-decimal pl-6">
           {steps.map((s, i) => (
             <li key={i}>

@@ -75,7 +75,7 @@ class Plan(BaseModel):
 _POLICY_VERBS: dict[str, str] = {"pick_up": "Picking up", "put_down": "Putting down"}
 
 # Stub delay per step, simulating arm motion until real RPCs are wired in.
-_STUB_STEP_DURATION_S = 3.0
+_STUB_STEP_DURATION_S = 6.0
 
 
 def _describe_step(step: Action) -> str:
@@ -105,13 +105,18 @@ async def _execute_step(step: Action) -> None:
 async def execute_plan(
     ctx: AsyncRunContext, plan: Plan, pub: "PlanProgress"
 ) -> None:
-    """Run each step of `plan` in sequence, flipping per-step status and narrating aloud."""
+    """Run each step of `plan` in sequence, flipping per-step status and narrating aloud.
+
+    On success, the publisher is left in `phase: "completed"` so the UI can
+    keep the finished list visible until the next plan replaces it.
+    """
     for i, step in enumerate(plan.steps):
         label = _describe_step(step)
         await pub.set_step_status(i, "in_progress")
         await ctx.update(label)
         await _execute_step(step)
         await pub.set_step_status(i, "completed")
+    await pub.set_completed()
 
 
 # The planner runs in OpenAI strict structured-output mode against the `Plan`
@@ -179,7 +184,7 @@ _PLANNER_USER_PROMPT_HEADER = textwrap.dedent(
 _PLAN_TOPIC = "agent.plan"
 
 StepStatus = Literal["pending", "in_progress", "completed"]
-PlanPhase = Literal["idle", "planning", "executing"]
+PlanPhase = Literal["idle", "planning", "executing", "completed"]
 
 
 class PlanProgress:
@@ -220,6 +225,10 @@ class PlanProgress:
         self._steps[index]["status"] = status
         await self._publish()
 
+    async def set_completed(self) -> None:
+        self._phase = "completed"
+        await self._publish()
+
     async def clear(self) -> None:
         self._phase = "idle"
         self._task = ""
@@ -229,7 +238,13 @@ class PlanProgress:
 
 @asynccontextmanager
 async def plan_progress(ctx: RunContext):
-    """Yield a `PlanProgress` and clear it on exit (success, error, or cancel).
+    """Yield a `PlanProgress` for the duration of a plan_and_execute call.
+
+    On success, the caller is expected to have moved the publisher to
+    `phase: "completed"` (via `execute_plan`), so the finished list stays
+    visible to the user until the next plan overwrites it. On error or
+    cancellation the publisher is cleared so a stale half-done plan does
+    not linger on the UI.
 
     `session.room_io` raises RuntimeError when the session was started without
     a room (e.g. `agent.py console`); in that case the publisher falls back
@@ -242,8 +257,9 @@ async def plan_progress(ctx: RunContext):
     pub = PlanProgress(room)
     try:
         yield pub
-    finally:
+    except BaseException:
         await pub.clear()
+        raise
 
 
 class PlannerToolset(AsyncToolset):
