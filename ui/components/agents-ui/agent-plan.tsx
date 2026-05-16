@@ -74,7 +74,7 @@ export function AgentPlanView({ className }: { className?: string }) {
 
 function AgentPlanList({ steps }: { steps: PlanStep[] }) {
   return (
-    <ol className="h-36 overflow-y-scroll scrollbar-thin scrollbar-thumb-gray-300 scrollbar-track-gray-100 bg-background rounded-md p-2 flex flex-col gap-2">
+    <ol className="h-36 overflow-y-auto [&::-webkit-scrollbar]:hidden [scrollbar-width:none] bg-background rounded-md p-2 flex flex-col gap-2">
       {steps.map((step, index) => (
         <AgentPlanItem key={index} index={index + 1} {...step} />
       ))}
