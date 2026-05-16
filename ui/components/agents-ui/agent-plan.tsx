@@ -67,16 +67,39 @@ export function AgentPlanView({ className }: { className?: string }) {
     <div className={cn('mx-auto w-full max-w-2xl pb-4 text-sm', className)}>
       {phase === 'planning' && <p>Planning{task ? `: ${task}` : '...'}</p>}
       {phase === 'completed' && <p className="font-semibold">Done!</p>}
-      {showList && (
-        <ol className="list-decimal pl-6">
-          {steps.map((s, i) => (
-            <li key={i}>
-              {s.description}{' '}
-              <span className="opacity-60">({STATUS_LABEL[s.status]})</span>
-            </li>
-          ))}
-        </ol>
-      )}
+      {showList && <AgentPlanList steps={steps} />}
     </div>
+  );
+}
+
+function AgentPlanList({ steps }: { steps: PlanStep[] }) {
+  return (
+    <div className="h-24 overflow-y-scroll scrollbar-thin scrollbar-thumb-gray-300 scrollbar-track-gray-100 bg-red-400">
+      <ol className="list-none flex flex-col gap-2">
+        {steps.map((step, index) => (
+          <AgentPlanItem key={index} index={index + 1} {...step} />
+        ))}
+      </ol>
+    </div>
+  );
+}
+
+function AgentPlanItemStatus({ status }: { status: StepStatus }) {
+  return <span className="opacity-20">({STATUS_LABEL[status]})</span>;
+}
+
+function AgentPlanItem({
+  index,
+  description,
+  status,
+}: PlanStep & { index: number }) {
+  return (
+    <li className="flex justify-between items-center gap-2">
+      <span className="flex items-baseline gap-2">
+        <span className="text-foreground/40 tabular-nums">{index}.</span>
+        {description}
+      </span>
+      <AgentPlanItemStatus status={status} />
+    </li>
   );
 }
