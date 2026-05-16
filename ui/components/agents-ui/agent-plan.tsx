@@ -77,13 +77,13 @@ export function AgentPlanView({ className }: { className?: string }) {
 function AgentPlanList({ steps }: { steps: PlanStep[] }) {
   return (
     <div className="relative">
-      <ol className="h-36 overflow-y-auto [&::-webkit-scrollbar]:hidden [scrollbar-width:none] bg-background rounded-md px-2 py-6 flex flex-col gap-2">
+      <ol className="h-36 overflow-y-auto [&::-webkit-scrollbar]:hidden [scrollbar-width:none] bg-background rounded-md px-2 py-10 flex flex-col gap-2">
         {steps.map((step, index) => (
           <AgentPlanItem key={index} index={index + 1} {...step} />
         ))}
       </ol>
-      <Fade top className="absolute inset-x-0 top-0 z-10 h-6 rounded-t-md" />
-      <Fade bottom className="absolute inset-x-0 bottom-0 z-10 h-6 rounded-b-md" />
+      <Fade top className="absolute inset-x-0 top-0 z-10 h-10 rounded-t-md" />
+      <Fade bottom className="absolute inset-x-0 bottom-0 z-10 h-10 rounded-b-md" />
     </div>
   );
 }
