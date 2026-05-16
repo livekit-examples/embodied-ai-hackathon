@@ -1,0 +1,20 @@
+[project]
+name = "portal-robot-runner"
+version = "0.1.0"
+description = "Standalone Portal robot runtime for a leslider SO-101 follower."
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "livekit-portal>=0.2.1",
+    "livekit-api>=0.7",
+    "lerobot[feetech]>=0.5",
+    "lerobot_robot_so101_slider",
+    "numpy>=1.24",
+    "python-dotenv>=1",
+    "opencv-python>=4.5",
+]
+
+# Flat layout on purpose: run the robot process with `uv run robot.py`.
+# This project intentionally omits teleop, recording, training, and policy code.
+
+[tool.uv.sources]
+lerobot_robot_so101_slider = { git = "https://github.com/pham-tuan-binh/leslider", subdirectory = "packages/lerobot_robot_so101_slider" }

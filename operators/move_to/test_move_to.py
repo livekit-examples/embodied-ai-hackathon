@@ -47,7 +47,7 @@ from _common import load_env, mint_token, required_env
 DEFAULT_IDENTITY = "move_to_tester"
 DEFAULT_DESTINATION = "move_to_operator"
 DEFAULT_METHOD = "move_to"
-CONFIG_PATH = pathlib.Path(__file__).parent / "portal.yaml"
+CONFIG_PATH = pathlib.Path(__file__).resolve().parent.parent.parent / "portal.yaml"
 
 
 def _parse_args() -> argparse.Namespace:

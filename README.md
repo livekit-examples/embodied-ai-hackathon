@@ -13,3 +13,10 @@ Existing priors used in this project includes:
 - LiveKit Agents which is a voice agents orchestration platform, our flagship product.
 - LiveKit Portal which is our SDK for teleoperation and data collection on any robot. This is the backbone for orchestration of the entire project. This allows operators or policies to run from different computers in the same network and allow us to easily collect data for our more than complex system without running into configurations and hardware hassle.
 - LeSlider which is a simple hardware extension to the SO101 we designed for fun and for desktop use cases like this.
+
+## Structure
+
+- `operators/` — operators (policies, teleop, perception) that join the same Portal room.
+- `robot/` — the robot runtime (drivers, scripts, and the Portal-published robot interface).
+- `utils/` — utilities for dataset collection.
+- `portal.yaml` — Portal room configuration shared by the robot and operators.

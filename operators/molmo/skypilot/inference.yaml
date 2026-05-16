@@ -1,0 +1,62 @@
+# Inference-side cloud runner for MolmoAct2-SO100_101.
+#
+# Spins up an on-demand H100 box, syncs this repo, and runs
+# `inference.py` as a long-lived job that joins the
+# LiveKit room your robot.py and teleoperator.py are already in.
+# Handoff between human operator and this policy is gated server-side,
+# the teleop window's `c` key cycles the active operator.
+#
+# On-demand (not spot) — preemption mid-trajectory would drop the
+# policy without warning, which is not what we want for a live arm.
+#
+# Usage:
+#   sky launch -c molmo skypilot/inference.yaml
+#   scripts/launch_inference.sh
+#   sky logs   molmo                                 # tail the run
+#   sky down   molmo                                 # destroy the box
+#
+# Override knobs at launch:
+#   sky launch ... --env LESLIDER_TASK="put the lemon in the bowl"
+#   sky launch ... --env MOLMO_DTYPE=float32
+#   sky launch ... --env MOLMO_NUM_STEPS=20
+
+name: leslider-molmo-inference
+
+resources:
+  cloud: nebius
+  accelerators: H100:1
+  cpus: 8+
+  memory: 32+
+  disk_size: 100
+  use_spot: false
+
+workdir: .
+
+# `.env` carries LIVEKIT_* credentials and is gitignored, so skypilot's
+# workdir upload skips it. Mount it to a stable path outside the
+# workdir, then drop a copy into the workdir at run time so
+# `_common.load_env()` picks it up the same way it does locally.
+file_mounts:
+  ~/.leslider-molmo.env: .env
+
+setup: |
+  sudo apt-get update -y
+  sudo apt-get install -y python3-dev libevdev-dev ffmpeg \
+    libavformat-dev libavcodec-dev libavutil-dev libswscale-dev libswresample-dev
+  pip install uv --quiet
+  uv sync
+
+envs:
+  # All optional — `inference.py` reads these and falls
+  # back to its argparse defaults if unset. Override per-launch with
+  # `sky launch ... --env KEY=VAL`.
+  MOLMO_MODEL: allenai/MolmoAct2-SO100_101
+  MOLMO_DTYPE: bfloat16
+  MOLMO_NUM_STEPS: "10"
+  MOLMO_WARMUP: "2"
+  LESLIDER_TASK: "Pick the blue cube up and hold it"
+  PORTAL_FPS: "30"
+
+run: |
+  cp ~/.leslider-molmo.env .env
+  uv run python inference.py
