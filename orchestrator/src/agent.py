@@ -22,6 +22,7 @@ from livekit.agents import (
     room_io,
 )
 from livekit.agents.llm import ChatContext, ImageContent
+from livekit.agents.llm.async_toolset import AsyncRunContext, AsyncToolset
 from livekit.plugins import ai_coustics, silero
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
 from pydantic import BaseModel, Field
@@ -40,7 +41,7 @@ load_dotenv(".env.local")
 
 # Plan schema: a discriminated union of robot actions. The planner LLM is
 # constrained to output JSON that validates against `Plan` via OpenAI's
-# strict structured-output mode (see `Orchestrator.plan_and_execute`).
+# strict structured-output mode (see `PlannerToolset.plan_and_execute`).
 
 Arm = Literal["left", "right"]
 
@@ -101,11 +102,13 @@ async def _execute_step(step: Action) -> None:
     await asyncio.sleep(_STUB_STEP_DURATION_S)
 
 
-async def execute_plan(ctx: RunContext, plan: Plan) -> None:
-    """Run each step of `plan` in sequence, surfacing live progress to the frontend."""
+async def execute_plan(ctx: AsyncRunContext, plan: Plan) -> None:
+    """Run each step of `plan` in sequence, narrating aloud and updating the badge."""
     async with activity_status(ctx, "executing") as set_detail:
         for step in plan.steps:
-            await set_detail(_describe_step(step))
+            label = _describe_step(step)
+            await set_detail(label)
+            await ctx.update(label)
             await _execute_step(step)
 
 
@@ -227,47 +230,37 @@ async def activity_status(ctx: RunContext, activity: str, detail: str = ""):
         await _publish_activity(room, "", "")
 
 
-class Orchestrator(Agent):
-    def __init__(self) -> None:
-        # Dedicated planner LLM used inside tools for vision-based reasoning,
-        # kept separate from the voice pipeline LLM to avoid mixing concerns.
-        self._planner_llm = inference.LLM(model="openai/gpt-5.2-chat-latest")
+class PlannerToolset(AsyncToolset):
+    """Async toolset that owns the vision planner LLM and the plan_and_execute tool.
 
-        super().__init__(
-            llm=inference.LLM(model="openai/gpt-5.2-chat-latest"),
-            instructions=textwrap.dedent(
-                """\
-                You are the toolbench helper, an embodied AI agent equipped with two robotic arms on linear sliders. With these arms,
-                you can reach any part of the user's toolbench to pick up and move around their tools at their request. Some examples of
-                requests you can fulfill are:
-                - "Can you get me the wrench?"
-                - "Can you put away the blue screwdriver?"
-                - "Can you clean up the tools"
+    Implemented as an `AsyncToolset` so the agent can speak progress updates
+    via `ctx.update(...)` *while* the work is running, instead of only after
+    the tool returns.
+    """
 
-                Based on the user's request, invoke the `plan_and_execute` function to plan and execute the task.
-                Keep spoken responses short and confirm what you are doing in plain language.
-                The tool returns a structured JSON plan describing the steps the robot will take; never read it aloud or recite kinds, arms, policies, or quoted strings from it. Just describe the action in one short sentence (e.g. "Picking up the red screwdriver now").
-                """
-            ),
-        )
+    def __init__(self, planner_llm: inference.LLM) -> None:
+        super().__init__(id="planner")
+        self._planner_llm = planner_llm
 
     @function_tool()
-    async def plan_and_execute(self, context: RunContext, task_description: str) -> str:
-        """Plan a task on the toolbench and return a JSON-encoded `Plan`.
+    async def plan_and_execute(
+        self, ctx: AsyncRunContext, task_description: str
+    ) -> str:
+        """Plan a toolbench task and execute it on the robot.
 
-        The returned value is a JSON object built from the robot's `move_to` /
-        `run_policy` primitives that fulfills the task, e.g.
-        `{"steps": [{"kind": "move_to", ...}, {"kind": "run_policy", ...}]}`.
-        Briefly confirm the action to the user in plain language; do NOT read
-        the JSON, kinds, policies, or arm IDs aloud.
+        The tool runs in the background; progress is narrated to the user via
+        `ctx.update(...)` (planning, moving arms, picking up, etc.). The
+        return value is a brief completion string — do NOT recap individual
+        steps aloud, since they were already narrated while running.
 
         Args:
             task_description: A short natural-language description of the task to complete (e.g. "get the red screwdriver",
             "put away the blue screwdriver", "clean up the tools", "organize the tools").
         """
-        context.disallow_interruptions()
-
+        ctx.disallow_interruptions()
         logger.info("Planning task: %s", task_description)
+
+        await ctx.update(f"Planning how to {task_description}")
 
         planner_ctx = ChatContext()
         planner_ctx.add_message(role="system", content=_PLANNER_SYSTEM_PROMPT)
@@ -279,7 +272,7 @@ class Orchestrator(Agent):
             ],
         )
 
-        async with activity_status(context, "planning", task_description):
+        async with activity_status(ctx, "planning", task_description):
             response = await self._planner_llm.chat(
                 chat_ctx=planner_ctx,
                 response_format=Plan,
@@ -291,9 +284,35 @@ class Orchestrator(Agent):
                 plan.model_dump_json(indent=2),
             )
 
-        await execute_plan(context, plan)
+        await execute_plan(ctx, plan)
+        return f"Completed: {task_description}"
 
-        return plan.model_dump_json()
+
+class Orchestrator(Agent):
+    def __init__(self) -> None:
+        # Dedicated planner LLM used inside the planner toolset for
+        # vision-based reasoning, kept separate from the voice pipeline LLM
+        # to avoid mixing concerns.
+        planner_llm = inference.LLM(model="openai/gpt-5.2-chat-latest")
+
+        super().__init__(
+            llm=inference.LLM(model="openai/gpt-5.2-chat-latest"),
+            instructions=textwrap.dedent(
+                """\
+                You are the toolbench helper, an embodied AI agent equipped with two robotic arms on linear sliders.
+                You can pick up and move the user's tools at their request, e.g.:
+                - "Can you get me the wrench?"
+                - "Can you put away the blue screwdriver?"
+                - "Can you clean up the tools"
+
+                Use the `plan_and_execute` tool for any such request. The tool runs in the background and
+                narrates progress aloud as it works (planning, moving, picking up, etc.). After it returns,
+                briefly confirm completion in one short sentence (e.g. "Done!" or "All set, here you go.").
+                Do not restate the individual steps; they have already been narrated.
+                """
+            ),
+            tools=[PlannerToolset(planner_llm)],
+        )
 
 
 server = AgentServer()
