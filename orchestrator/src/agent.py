@@ -22,7 +22,7 @@ from livekit.plugins import ai_coustics, silero
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
 
 # Repo-relative path to the toolbench image used as visual context for planning.
-TOOLS_IMAGE_PATH = Path(__file__).resolve().parents[2] / "images" / "tools.jpg"
+TOOLS_IMAGE_PATH = Path(__file__).resolve().parents[1] / "images" / "tools.jpg"
 # Pre-encode the image once at import time; it's static for the demo.
 TOOLS_IMAGE_DATA_URL = "data:image/jpeg;base64," + base64.b64encode(
     TOOLS_IMAGE_PATH.read_bytes()
