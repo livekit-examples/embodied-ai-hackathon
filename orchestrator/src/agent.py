@@ -4,6 +4,7 @@ import os
 import textwrap
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Annotated, Literal, Union
 
 from dotenv import load_dotenv
 from livekit.agents import (
@@ -21,6 +22,7 @@ from livekit.agents import (
 from livekit.agents.llm import ChatContext, ImageContent
 from livekit.plugins import ai_coustics, silero
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
+from pydantic import BaseModel, Field
 
 # Repo-relative path to the toolbench image used as visual context for planning.
 TOOLS_IMAGE_PATH = Path(__file__).resolve().parents[1] / "images" / "tools.jpg"
@@ -34,84 +36,97 @@ logger = logging.getLogger("agent")
 load_dotenv(".env.local")
 
 
-# Code as Policies prompt: the planner must emit Python code that drives the
-# robot via a tiny API, not English prose. See arXiv:2209.07753.
+# Plan schema: a discriminated union of robot actions. The planner LLM is
+# constrained to output JSON that validates against `Plan` via OpenAI's
+# strict structured-output mode (see `Orchestrator.plan_and_execute`).
+
+Arm = Literal["left", "right"]
+
+
+class MoveTo(BaseModel):
+    """Position `arm` over `object_name` so a subsequent policy can act on it."""
+
+    kind: Literal["move_to"]
+    object_name: str
+    arm: Arm
+
+
+class RunPolicy(BaseModel):
+    """Run a low-level pick-up / put-down policy on `arm`."""
+
+    kind: Literal["run_policy"]
+    policy: Literal["pick_up", "put_down"]
+    arm: Arm
+
+
+Action = Annotated[Union[MoveTo, RunPolicy], Field(discriminator="kind")]
+
+
+class Plan(BaseModel):
+    """Ordered list of robot actions that fulfill a task."""
+
+    steps: list[Action]
+
+
+# The planner runs in OpenAI strict structured-output mode against the `Plan`
+# schema, so the JSON shape is guaranteed; the prompts only need to steer
+# semantic choices (which tool, which arm, how many steps).
 _PLANNER_SYSTEM_PROMPT = textwrap.dedent(
     """\
-    You write robot policy code for an embodied agent with two arms on linear sliders
-    above a user's toolbench, in the style of "Code as Policies" (Liang et al., 2022).
+    You are the planner for an embodied agent with two arms on linear sliders
+    above a user's toolbench. Given a task and an image of the toolbench,
+    output a sequence of robot actions that fulfills the task.
 
     Output contract:
-    - Output ONLY valid Python source code. No prose, no explanations, no markdown
-      code fences, no leading/trailing commentary.
-    - Use ONLY the two API functions provided in the Hints (move_to, run_policy).
-      Do not invent new functions, do not import anything, do not call any other names.
-    - Reference tools by short, visually grounded descriptions (color + type, e.g.
-      "red screwdriver", "claw hammer") that match what is visible in the image.
-    - Keep the program straight-line and minimal: one statement per line, no helper
-      functions, no loops or conditionals unless the task genuinely requires them.
+    - You will be invoked in JSON-schema-constrained mode. Output ONLY the
+      JSON object that matches the Plan schema.
+    - Reference tools by short, visually grounded descriptions (color + type,
+      e.g. "red screwdriver", "claw hammer") that match what is visible
+      in the image.
+    - Use the minimum number of steps needed. Do not invent extra steps.
+    - Pick `arm` based on which side of the toolbench the object is on,
+      preferring "right" when ambiguous.
     """
 )
 
 
 # Hints + Examples block, appended to a user message that also carries the
-# toolbench image and the new "# Task: ..." comment.
+# toolbench image and the new "# Task: ..." line.
 _PLANNER_USER_PROMPT_HEADER = textwrap.dedent(
-    '''\
-    # Available robot API:
-    from robot import move_to, run_policy
-    # move_to(object_name: str, arm: str) -> None
-    #   Positions `arm` ("left" | "right") over `object_name` so a subsequent
-    #   policy can act on it. `object_name` is a short visual description
-    #   the downstream policy can recognize (e.g. "red screwdriver", "claw hammer").
-    # run_policy(policy_name: str, arm: str) -> None
-    #   Runs a low-level policy on `arm`. `policy_name` must be one of:
-    #   "pick-up", "put-down".
+    """\
+    Available actions (as JSON objects):
+      {"kind": "move_to", "object_name": <str>, "arm": "left"|"right"}
+      {"kind": "run_policy", "policy": "pick_up"|"put_down", "arm": "left"|"right"}
+
+    Examples:
 
     # Task: hand me the claw hammer.
-    move_to("claw hammer", arm="right")
-    run_policy("pick-up", arm="right")
+    {"steps": [
+      {"kind": "move_to",    "object_name": "claw hammer", "arm": "right"},
+      {"kind": "run_policy", "policy": "pick_up",          "arm": "right"}
+    ]}
 
     # Task: put the blue painter's tape away in the toolbox.
-    move_to("blue painter's tape", arm="left")
-    run_policy("pick-up", arm="left")
-    move_to("toolbox", arm="left")
-    run_policy("put-down", arm="left")
+    {"steps": [
+      {"kind": "move_to",    "object_name": "blue painter's tape", "arm": "left"},
+      {"kind": "run_policy", "policy": "pick_up",                  "arm": "left"},
+      {"kind": "move_to",    "object_name": "toolbox",             "arm": "left"},
+      {"kind": "run_policy", "policy": "put_down",                 "arm": "left"}
+    ]}
 
     # Task: clear the needle-nose pliers and the utility knife off the bench.
-    move_to("needle-nose pliers", arm="left")
-    run_policy("pick-up", arm="left")
-    move_to("utility knife", arm="right")
-    run_policy("pick-up", arm="right")
-    move_to("toolbox", arm="left")
-    run_policy("put-down", arm="left")
-    move_to("toolbox", arm="right")
-    run_policy("put-down", arm="right")
-    '''
-)
-
-
-def _extract_python(text: str) -> str:
-    """Strip an optional surrounding ```python ... ``` (or plain ```) markdown fence.
-
-    LLMs frequently wrap code in fences even when told not to. We only handle the
-    common single-fence case; anything else is returned as-is for the caller to
-    deal with.
+    {"steps": [
+      {"kind": "move_to",    "object_name": "needle-nose pliers", "arm": "left"},
+      {"kind": "run_policy", "policy": "pick_up",                 "arm": "left"},
+      {"kind": "move_to",    "object_name": "utility knife",      "arm": "right"},
+      {"kind": "run_policy", "policy": "pick_up",                 "arm": "right"},
+      {"kind": "move_to",    "object_name": "toolbox",            "arm": "left"},
+      {"kind": "run_policy", "policy": "put_down",                "arm": "left"},
+      {"kind": "move_to",    "object_name": "toolbox",            "arm": "right"},
+      {"kind": "run_policy", "policy": "put_down",                "arm": "right"}
+    ]}
     """
-    stripped = text.strip()
-    if not stripped.startswith("```"):
-        return stripped
-
-    # Drop the opening fence line (``` or ```python or ```py).
-    first_newline = stripped.find("\n")
-    if first_newline == -1:
-        return stripped
-    body = stripped[first_newline + 1 :]
-
-    if body.endswith("```"):
-        body = body[: -len("```")]
-
-    return body.strip()
+)
 
 
 @asynccontextmanager
@@ -161,19 +176,20 @@ class Orchestrator(Agent):
 
                 Based on the user's request, invoke the `plan_and_execute` function to plan and execute the task.
                 Keep spoken responses short and confirm what you are doing in plain language.
-                The tool returns Python robot code; never read it aloud or recite function names, arm IDs, or quoted strings from it. Just describe the action in one short sentence (e.g. "Picking up the red screwdriver now").
+                The tool returns a structured JSON plan describing the steps the robot will take; never read it aloud or recite kinds, arms, policies, or quoted strings from it. Just describe the action in one short sentence (e.g. "Picking up the red screwdriver now").
                 """
             ),
         )
 
     @function_tool()
     async def plan_and_execute(self, context: RunContext, task_description: str) -> str:
-        """Plan a task on the toolbench and return executable robot policy code.
+        """Plan a task on the toolbench and return a JSON-encoded `Plan`.
 
-        The returned value is a short Python program built from the robot's
-        `move_to` / `run_policy` primitives that fulfills the task. Briefly
-        confirm the action to the user in plain language; do NOT read the code,
-        function names, or arm IDs aloud.
+        The returned value is a JSON object built from the robot's `move_to` /
+        `run_policy` primitives that fulfills the task, e.g.
+        `{"steps": [{"kind": "move_to", ...}, {"kind": "run_policy", ...}]}`.
+        Briefly confirm the action to the user in plain language; do NOT read
+        the JSON, kinds, policies, or arm IDs aloud.
 
         Args:
             task_description: A short natural-language description of the task to complete (e.g. "get the red screwdriver",
@@ -194,12 +210,20 @@ class Orchestrator(Agent):
         )
 
         async with activity_status(context, "planning", task_description):
-            response = await self._planner_llm.chat(chat_ctx=planner_ctx).collect()
-            code = _extract_python(response.text)
-            logger.info("Generated policy code:\n%s", code)
+            response = await self._planner_llm.chat(
+                chat_ctx=planner_ctx,
+                response_format=Plan,
+            ).collect()
+            plan = Plan.model_validate_json(response.text)
+            logger.info(
+                "Generated plan with %d step(s):\n%s",
+                len(plan.steps),
+                plan.model_dump_json(indent=2),
+            )
 
-        # TODO: actually dispatch the generated code to the robot arms.
-        return code
+        # TODO: dispatch each step deterministically against the robot arms,
+        # e.g. via `match step:` over MoveTo / RunPolicy.
+        return plan.model_dump_json()
 
 
 server = AgentServer()
