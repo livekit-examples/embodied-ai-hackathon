@@ -1,0 +1,49 @@
+# Standalone smoke test for MolmoAct2-SO100_101 on Nebius.
+#
+# Launches an on-demand H100 box, syncs this repo, and runs
+# `smoke_test.py`, which:
+#   * downloads the model + sample images from the HF Hub,
+#   * runs a warmup pass and ~35 synthetic ticks (one forced replan),
+#   * reports chunk shape, replan timing, peak GPU memory, and a
+#     sample of rig-side action dicts.
+#
+# No LiveKit credentials are needed and no robot has to be running.
+# This is the "does the GPU actually host this thing end-to-end" check
+# you run before pointing the policy at a live room with inference.yaml.
+#
+# Usage:
+#   sky launch -c molmo skypilot/smoke_test.yaml
+#   scripts/launch_smoke.sh
+#   sky logs   molmo
+#   sky down   molmo
+#
+# Knob overrides:
+#   sky launch ... --env MOLMO_DTYPE=float32
+#   sky launch ... --env MOLMO_NUM_STEPS=20
+
+name: molmo-smoke-test
+
+resources:
+  cloud: nebius
+  accelerators: H100:1
+  cpus: 8+
+  memory: 32+
+  disk_size: 100
+  use_spot: false
+
+workdir: .
+
+setup: |
+  sudo apt-get update -y
+  sudo apt-get install -y python3-dev libevdev-dev ffmpeg \
+    libavformat-dev libavcodec-dev libavutil-dev libswscale-dev libswresample-dev
+  pip install uv --quiet
+  uv sync
+
+envs:
+  MOLMO_MODEL: allenai/MolmoAct2-SO100_101
+  MOLMO_DTYPE: bfloat16
+  MOLMO_NUM_STEPS: "10"
+
+run: |
+  uv run python smoke_test.py
