@@ -38,6 +38,10 @@ logger = logging.getLogger("agent")
 
 load_dotenv(".env.local")
 
+# Identities of the operator participants to invoke RPCs on.
+OPERATOR_MOVE_TO_IDENTITY = "move-to-operator"
+OPERATOR_RUN_POLICY_IDENTITY = "run-policy-operator"
+
 
 # Plan schema: a discriminated union of robot actions. The planner LLM is
 # constrained to output JSON that validates against `Plan` via OpenAI's
@@ -87,21 +91,18 @@ def _describe_step(step: Action) -> str:
             return f"{_POLICY_VERBS[policy]} with {arm} arm"
 
 
-
-# TODO: replace the sleep with an RPC to the robot worker, e.g.
-#     await room.local_participant.perform_rpc(
-#         destination_identity="robot",
-#         method="execute_step",
-#         payload=step.model_dump_json(),
-#     )
-
 async def _execute_run_policy(step: RunPolicy, local_participant) -> None:
     logger.warning("Not wired to RPC yet")
     await asyncio.sleep(_STUB_STEP_DURATION_S)
 
+
 async def _execute_move_to(step: MoveTo, local_participant) -> None:
-    logger.warning("Not wired to RPC yet")
-    await asyncio.sleep(_STUB_STEP_DURATION_S)
+    await local_participant.perform_rpc(
+        destination_identity=OPERATOR_MOVE_TO_IDENTITY,
+        method="move_to",
+        payload=step.object_name,
+    )
+
 
 async def _execute_step(step: Action, room) -> None:
     """Run a single plan step."""
@@ -111,15 +112,18 @@ async def _execute_step(step: Action, room) -> None:
         await asyncio.sleep(_STUB_STEP_DURATION_S)
         return
     local_participant = room.local_participant
-    match step:
-        case RunPolicy():
-            await _execute_run_policy(step, local_participant)
-        case MoveTo():
-            await _execute_move_to(step, local_participant)
+    try:
+        match step:
+            case RunPolicy():
+                await _execute_run_policy(step, local_participant)
+            case MoveTo():
+                await _execute_move_to(step, local_participant)
+    except Exception as e:
+        logger.error("Error executing step: %s", e)
+        raise
 
-async def execute_plan(
-    ctx: AsyncRunContext, plan: Plan, pub: "PlanProgress"
-) -> None:
+
+async def execute_plan(ctx: AsyncRunContext, plan: Plan, pub: "PlanProgress") -> None:
     """Run each step of `plan` in sequence, flipping per-step status and narrating aloud.
 
     On success, the publisher is left in `phase: "completed"` so the UI can
