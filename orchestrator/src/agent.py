@@ -28,7 +28,7 @@ from livekit.plugins.turn_detector.multilingual import MultilingualModel
 from pydantic import BaseModel, Field
 
 # Repo-relative path to the toolbench image used as visual context for planning.
-TOOLS_IMAGE_PATH = Path(__file__).resolve().parents[1] / "images" / "tools.jpg"
+TOOLS_IMAGE_PATH = Path(__file__).resolve().parents[1] / "images" / "real_setup.jpg"
 # Pre-encode the image once at import time; it's static for the demo.
 TOOLS_IMAGE_DATA_URL = "data:image/jpeg;base64," + base64.b64encode(
     TOOLS_IMAGE_PATH.read_bytes()
