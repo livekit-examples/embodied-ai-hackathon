@@ -113,7 +113,7 @@ def _extract_python(text: str) -> str:
     return body.strip()
 
 
-class Assistant(Agent):
+class Orchestrator(Agent):
     def __init__(self) -> None:
         # Dedicated planner LLM used inside tools for vision-based reasoning,
         # kept separate from the voice pipeline LLM to avoid mixing concerns.
@@ -182,8 +182,8 @@ def prewarm(proc: JobProcess):
 server.setup_fnc = prewarm
 
 
-@server.rtc_session(agent_name="my-agent")
-async def my_agent(ctx: JobContext):
+@server.rtc_session(agent_name="orchestrator")
+async def orchestrator(ctx: JobContext):
 
     ctx.log_context_fields = {
         "room": ctx.room.name,
@@ -200,7 +200,7 @@ async def my_agent(ctx: JobContext):
     )
 
     await session.start(
-        agent=Assistant(),
+        agent=Orchestrator(),
         room=ctx.room,
         room_options=room_io.RoomOptions(
             audio_input=room_io.AudioInputOptions(
