@@ -27,13 +27,15 @@ Existing priors used in this project includes:
 
 **Identity:** `run-policy-operator`. Target this when calling the RPC.
 
-Drives the robot with pre-loaded ACT checkpoints. If a sparse-reward checkpoint is attached, the RPC blocks until the classifier declares the task done, then parks.
+Drives the robot with pre-loaded ACT checkpoints. The RPC blocks until a "task done" signal fires (sparse-reward classifier and/or fixed duration), then parks. `pick_up` typically uses the reward classifier; `put_down` uses a fixed duration.
 
 ```bash
 cd operators/run_policy && uv sync
 uv run python run_policy_operator.py \
-  --policy pick_up=/path/to/act_ckpt \
-  --reward pick_up=/path/to/reward/best.pt
+  --policy pick_up=/path/to/pick_up_ckpt \
+  --policy put_down=/path/to/put_down_ckpt \
+  --reward pick_up=/path/to/reward/best.pt \
+  --duration put_down=4.0
 ```
 
 Needs `LIVEKIT_URL`, `LIVEKIT_ROOM`, and Portal creds in env / `.env`.
@@ -43,17 +45,30 @@ Needs `LIVEKIT_URL`, `LIVEKIT_ROOM`, and Portal creds in env / `.env`.
 | flag | env | default |
 | --- | --- | --- |
 | `--policy NAME=PATH` | `PICK_UP_CHECKPOINT`, `PUT_DOWN_CHECKPOINT` | none (≥1 required) |
-| `--reward NAME=PATH` | `PICK_UP_REWARD`, `PUT_DOWN_REWARD` | none (RPC returns immediately) |
+| `--reward NAME=PATH` | `PICK_UP_REWARD`, `PUT_DOWN_REWARD` | none |
+| `--duration NAME=SECONDS` | `PICK_UP_DURATION`, `PUT_DOWN_DURATION` | none |
 | `--reward-threshold` | `REWARD_THRESHOLD` | `0.7` |
 | `--reward-trigger-ticks` | `REWARD_TRIGGER_TICKS` | `10` (~0.33 s @ 30 fps) |
 | `--reward-camera` | `REWARD_CAMERA` | `arm_camera` |
 | `--default-policy` | `RUN_POLICY_DEFAULT` | none (pre-warm only) |
 | `--no-temporal-ensemble` / `--temporal-ensemble-coeff` | n/a | enabled / `0.01` |
 
+A policy with neither `--reward` nor `--duration` returns immediately (`status: "no_terminator"`); the caller is on its own for completion detection.
+
 **RPC:** `run_policy(payload)`. Payload is `"pick_up"` or `{"policy": "pick_up"}`. Reply is a JSON string:
 
 ```json
-{"policy": "pick_up", "cameras": ["arm_camera"], "active_operator": "run-policy-operator", "status": "done", "reward_prob": 0.81, "ticks_above": 10}
+{"policy": "pick_up", "cameras": ["arm_camera"], "active_operator": "run-policy-operator", "status": "done", "reason": "reward", "reward_prob": 0.81, "ticks_above": 10}
 ```
 
-`status` is one of `done` (reward fired, parked), `no_reward` (no checkpoint attached, returned immediately), `preempted` (another `run_policy()` took over, includes `by`), `cancelled` (operator shut down). Errors come back as `RpcError`: `1400` (bad payload) or `1404` (unknown policy).
+`status` is one of:
+
+| status | reason field | meaning |
+| --- | --- | --- |
+| `done` | `reward` | reward streak hit `--reward-trigger-ticks`. Includes `reward_prob`, `ticks_above`. |
+| `done` | `timeout` | fixed duration elapsed. Includes `seconds`. |
+| `no_terminator` | n/a | neither reward nor duration attached; returned immediately. |
+| `preempted` | n/a | another `run_policy()` took over. Includes `by`. |
+| `cancelled` | n/a | operator shut down before any terminator fired. |
+
+Errors come back as `RpcError`: `1400` (bad payload) or `1404` (unknown policy).

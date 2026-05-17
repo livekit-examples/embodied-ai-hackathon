@@ -13,20 +13,25 @@ that:
      checkpoint is attached to the chosen policy).
   2. Claims active-operator control of the robot.
   3. Switches the continuous tick loop to drive that policy.
-  4. Blocks the RPC reply until the sparse-reward classifier
-     (``utils/train_sparse_reward``) declares the task done — i.e.
-     ``P(done) >= threshold`` for ``trigger_ticks`` consecutive ticks.
-     On done, the tick loop parks, the active-operator slot is
-     released, and the RPC returns success. Policies that do not
-     have a reward checkpoint attached return immediately
-     (``status: "no_reward"``), preserving the pre-reward behaviour.
+  4. Blocks the RPC reply until a "task done" signal fires. Two
+     signal sources are supported, and any policy can use either or
+     both:
+       * a sparse-reward classifier (``utils/train_sparse_reward``)
+         attached to the policy. Fires when ``P(done) >= threshold``
+         for ``trigger_ticks`` consecutive ticks.
+       * a fixed driving duration in seconds. Fires after that many
+         seconds of driving, regardless of the reward signal.
+     If both are configured, whichever fires first wins. On done,
+     the tick loop parks, the active-operator slot is released, and
+     the RPC returns success. Policies with neither signal source
+     return immediately (``status: "no_terminator"``).
 
 The robot side runs the shared ``portal.yaml`` at the repo root, which
 publishes *two* cameras (``arm_camera`` + ``overhead_camera``). The ACT
 checkpoints trained via ``utils/data_collection`` typically only
 consume one camera (its ``portal.yaml`` declares ``arm_camera`` only).
 We filter the obs frames per-tick down to whatever each policy
-declares in ``policy.config.input_features`` — extra cameras in the
+declares in ``policy.config.input_features``; extra cameras in the
 obs are simply ignored.
 
 State/action wire shape (7-dim, in the SO-101 follower's native order
@@ -37,7 +42,7 @@ from the shared ``portal.yaml``):
    slider.vel]
 
 ACT inference internals (chunk + temporal ensemble) follow
-``utils/data_collection/policies/act/inference.py`` — referenced for
+``utils/data_collection/policies/act/inference.py``, referenced for
 the policy/preprocessor/postprocessor wiring.
 """
 from __future__ import annotations
@@ -193,6 +198,7 @@ class LoadedPolicy:
         temporal_ensemble_coeff: float,
         reward_checkpoint: Optional[Path] = None,
         reward_camera: str = "arm_camera",
+        duration_s: Optional[float] = None,
     ) -> None:
         self.name = name
         self.checkpoint_dir = checkpoint_dir
@@ -222,7 +228,7 @@ class LoadedPolicy:
         )
 
         # Optional sparse-reward classifier. Same single-step inputs as
-        # ACT (one camera + 7-d state) — see utils/train_sparse_reward.
+        # ACT (one camera + 7-d state); see utils/train_sparse_reward.
         self.reward_checkpoint = reward_checkpoint
         self.reward_camera = reward_camera
         self.scorer = None
@@ -231,6 +237,10 @@ class LoadedPolicy:
             self.scorer = RewardScorer.from_checkpoint(
                 reward_checkpoint, device=device
             )
+
+        # Optional fixed-duration auto-stop. Independent of the reward
+        # classifier; whichever terminator fires first wins.
+        self.duration_s = duration_s
 
     def reset(self) -> None:
         self.policy.reset()
@@ -294,6 +304,57 @@ def _parse_reward_paths(args_pairs: list[str]) -> dict[str, Path]:
     return out
 
 
+def _parse_duration_specs(args_pairs: list[str]) -> dict[str, float]:
+    """Parse ``name=seconds`` pairs into per-policy fixed-duration auto-stops.
+
+    A policy with a duration entry will auto-park after ``seconds`` of
+    driving, even without a reward checkpoint. Combined with a reward
+    checkpoint, whichever fires first wins. Falls back to env vars
+    ``PICK_UP_DURATION`` / ``PUT_DOWN_DURATION`` when no CLI pairs are
+    given.
+    """
+    out: dict[str, float] = {}
+    if args_pairs:
+        for p in args_pairs:
+            if "=" not in p:
+                raise SystemExit(
+                    f"--duration expects name=seconds, got: {p!r}"
+                )
+            name, _, value = p.partition("=")
+            name = name.strip()
+            value = value.strip()
+            if not name or not value:
+                raise SystemExit(f"--duration expects name=seconds, got: {p!r}")
+            try:
+                seconds = float(value)
+            except ValueError as e:
+                raise SystemExit(
+                    f"--duration seconds must be a number, got: {value!r}"
+                ) from e
+            if seconds <= 0:
+                raise SystemExit(
+                    f"--duration seconds must be > 0, got: {seconds}"
+                )
+            out[name] = seconds
+        return out
+
+    defaults = (
+        ("pick_up", os.environ.get("PICK_UP_DURATION")),
+        ("put_down", os.environ.get("PUT_DOWN_DURATION")),
+    )
+    for name, value in defaults:
+        if value:
+            try:
+                seconds = float(value)
+            except ValueError as e:
+                raise SystemExit(
+                    f"{name.upper()}_DURATION must be a number, got: {value!r}"
+                ) from e
+            if seconds > 0:
+                out[name] = seconds
+    return out
+
+
 async def main() -> None:
     parser = argparse.ArgumentParser(
         description="Run trained ACT policies over LiveKit Portal, "
@@ -325,7 +386,7 @@ async def main() -> None:
         metavar="NAME",
         help="Pre-select this policy at startup so the tick loop is warm "
              "before any run_policy() RPC. Does not auto-claim the "
-             "active-operator slot — a peer (or teleop `c`) still has to "
+             "active-operator slot; a peer (or teleop `c`) still has to "
              "(env: RUN_POLICY_DEFAULT).",
     )
     parser.add_argument(
@@ -361,6 +422,18 @@ async def main() -> None:
              "checkpoints train on 'arm_camera'; override only if your "
              "reward model was trained on a different stream.",
     )
+    parser.add_argument(
+        "--duration",
+        action="append",
+        default=[],
+        metavar="NAME=SECONDS",
+        help="Auto-stop the named policy after a fixed number of seconds, "
+             "independent of any reward classifier. Useful for policies "
+             "like put_down where a learned 'done' signal is overkill. "
+             "If both a reward checkpoint and a duration are configured, "
+             "whichever fires first parks the operator. Defaults to "
+             "PICK_UP_DURATION / PUT_DOWN_DURATION env vars.",
+    )
     parser.set_defaults(temporal_ensemble=True)
     args = parser.parse_args()
 
@@ -385,6 +458,14 @@ async def main() -> None:
         if not path.is_file():
             raise FileNotFoundError(f"reward checkpoint not found: {path}")
 
+    durations = _parse_duration_specs(args.duration)
+    unknown_duration = sorted(set(durations) - set(policy_paths))
+    if unknown_duration:
+        raise SystemExit(
+            f"--duration names not registered as policies: {unknown_duration} "
+            f"(known: {sorted(policy_paths)})"
+        )
+
     url = required_env("LIVEKIT_URL")
     room = required_env("LIVEKIT_ROOM")
     token = mint_token(IDENTITY, room)
@@ -401,10 +482,14 @@ async def main() -> None:
     policies: dict[str, LoadedPolicy] = {}
     for name, path in policy_paths.items():
         reward_path = reward_paths.get(name)
-        print(
-            f"[run-policy-operator] loading '{name}' ..."
-            + (f" (+reward {reward_path})" if reward_path else "")
-        )
+        duration_s = durations.get(name)
+        extras = []
+        if reward_path:
+            extras.append(f"+reward {reward_path}")
+        if duration_s is not None:
+            extras.append(f"+duration {duration_s}s")
+        suffix = (" (" + ", ".join(extras) + ")") if extras else ""
+        print(f"[run-policy-operator] loading '{name}' ...{suffix}")
         policies[name] = LoadedPolicy(
             name=name,
             checkpoint_dir=path,
@@ -413,13 +498,18 @@ async def main() -> None:
             temporal_ensemble_coeff=args.temporal_ensemble_coeff,
             reward_checkpoint=reward_path,
             reward_camera=args.reward_camera,
+            duration_s=duration_s,
         )
         scorer_tag = (
             f"reward={'on' if policies[name].scorer is not None else 'off'}"
         )
+        duration_tag = (
+            f"duration={duration_s}s" if duration_s is not None else "duration=off"
+        )
         print(
             f"[run-policy-operator]   '{name}' cameras={policies[name].cameras} "
-            f"chunk={policies[name].policy.config.chunk_size} {scorer_tag}"
+            f"chunk={policies[name].policy.config.chunk_size} "
+            f"{scorer_tag} {duration_tag}"
         )
 
     cfg = OperatorConfig.from_yaml_file(CONFIG_PATH, room)
@@ -437,17 +527,19 @@ async def main() -> None:
     )
 
     # Currently-selected policy, or None to park. Single writer (the RPC
-    # handler / tick loop both run on the asyncio loop), single reader
-    # (the tick loop), so no lock needed on CPython.
+    # handler / tick loop / timeout task all run on the asyncio loop),
+    # so no lock needed on CPython.
     current: Optional[LoadedPolicy] = None
-    # When a run_policy() RPC engages a policy that has a reward
-    # checkpoint, we hand it an asyncio.Future that resolves once the
-    # sparse-reward classifier declares the task done. The tick loop
-    # writes the result; the RPC handler awaits it before returning.
-    # Counters are reset each time `current` is (re)assigned.
+    # When a run_policy() RPC engages a policy that has at least one
+    # terminator (reward classifier and/or fixed duration), we hand it
+    # an asyncio.Future that resolves once a terminator fires. The
+    # tick loop resolves it on reward; a sleep coroutine resolves it
+    # on duration. Counters are reset each time `current` is (re)assigned.
     done_future: Optional[asyncio.Future] = None
+    timeout_task: Optional[asyncio.Task] = None
     reward_above_streak = 0
     last_reward_prob: float = 0.0
+    last_logged_policy: Optional[str] = None
 
     if args.default_policy:
         if args.default_policy not in policies:
@@ -462,8 +554,52 @@ async def main() -> None:
             f"pre-selected (warm); awaiting active-operator handoff"
         )
 
+    async def _park(result: dict) -> None:
+        """Resolve the current done_future, drop the tick loop's policy,
+        cancel any pending timeout, and release the active-operator
+        slot. Idempotent: a second call is a no-op."""
+        nonlocal current, done_future, timeout_task
+        nonlocal reward_above_streak, last_logged_policy
+        if done_future is None:
+            return
+        fut = done_future
+        done_future = None
+        current = None
+        reward_above_streak = 0
+        last_logged_policy = None
+        if timeout_task is not None and not timeout_task.done():
+            timeout_task.cancel()
+        timeout_task = None
+        if not fut.done():
+            fut.set_result(result)
+        try:
+            await op.set_active_operator(None)
+        except Exception as e:
+            print(f"[run-policy-operator] release active-operator failed: {e}")
+
+    async def _duration_watchdog(
+        seconds: float, policy_name: str, target_future: asyncio.Future
+    ) -> None:
+        try:
+            await asyncio.sleep(seconds)
+        except asyncio.CancelledError:
+            return
+        if target_future.done() or done_future is not target_future:
+            # Preempted, completed by reward, or shut down before we fired.
+            return
+        print(
+            f"[run-policy-operator] duration {seconds:.2f}s elapsed for "
+            f"'{policy_name}'; parking"
+        )
+        await _park({
+            "status": "done",
+            "reason": "timeout",
+            "seconds": seconds,
+        })
+
     async def run_policy_rpc(data: RpcInvocationData) -> str:
-        nonlocal current, done_future, reward_above_streak, last_reward_prob
+        nonlocal current, done_future, timeout_task
+        nonlocal reward_above_streak, last_reward_prob
         payload = (data.payload or "").strip()
         name = payload
         if payload.startswith("{"):
@@ -496,32 +632,42 @@ async def main() -> None:
         # reply rather than hanging on a future we're about to drop.
         if done_future is not None and not done_future.done():
             done_future.set_result({"status": "preempted", "by": name})
+        if timeout_task is not None and not timeout_task.done():
+            timeout_task.cancel()
+        timeout_task = None
 
+        has_terminator = chosen.scorer is not None or chosen.duration_s is not None
         new_future: Optional[asyncio.Future] = None
-        if chosen.scorer is not None:
+        if has_terminator:
             new_future = asyncio.get_running_loop().create_future()
         done_future = new_future
         reward_above_streak = 0
         last_reward_prob = 0.0
         current = chosen
 
+        if new_future is not None and chosen.duration_s is not None:
+            timeout_task = asyncio.create_task(
+                _duration_watchdog(chosen.duration_s, name, new_future)
+            )
+
         me_id = op.local_identity()
         await op.set_active_operator(me_id)
         print(
             f"[run-policy-operator] run_policy('{name}') -> "
             f"active operator -> {me_id} cameras={chosen.cameras} "
-            f"reward={'on' if chosen.scorer is not None else 'off'}"
+            f"reward={'on' if chosen.scorer is not None else 'off'} "
+            f"duration={chosen.duration_s if chosen.duration_s is not None else 'off'}"
         )
 
         if new_future is None:
-            # No reward attached — preserve the pre-reward behaviour and
-            # return immediately, flagging that the caller is on its own
-            # for completion detection.
+            # No terminators attached; preserve the pre-terminator
+            # behaviour and return immediately, flagging that the
+            # caller is on its own for completion detection.
             return json.dumps({
                 "policy": name,
                 "cameras": list(chosen.cameras),
                 "active_operator": me_id,
-                "status": "no_reward",
+                "status": "no_terminator",
             })
 
         try:
@@ -530,8 +676,7 @@ async def main() -> None:
             # Caller-side cancellation. Park before re-raising so we
             # don't leave the tick loop driving with a dead future.
             if current is chosen:
-                current = None
-                done_future = None
+                await _park({"status": "cancelled"})
             raise
 
         return json.dumps({
@@ -559,7 +704,6 @@ async def main() -> None:
     fwd_pass_ms_sum = 0.0
     FWD_PASS_THRESHOLD_MS = 5.0
     tick_count = 0
-    last_logged_policy: Optional[str] = None
 
     try:
         async for _ in pace(fps):
@@ -577,8 +721,8 @@ async def main() -> None:
 
             active = current
             if active is None:
-                # No policy selected yet — park. The teleop side or any
-                # operator can call run_policy() to engage.
+                # No policy selected yet; tick loop parks. The teleop
+                # side or any operator can call run_policy() to engage.
                 continue
 
             if last_logged_policy != active.name:
@@ -650,7 +794,7 @@ async def main() -> None:
             if active.scorer is not None and done_future is not None:
                 reward_frame = frames.get(active.reward_camera)
                 if reward_frame is None:
-                    # Reward camera not in this obs — drop the streak so
+                    # Reward camera not in this obs; drop the streak so
                     # a stale reading can't carry us across the trigger.
                     reward_above_streak = 0
                 else:
@@ -680,21 +824,18 @@ async def main() -> None:
                             f"({args.reward_trigger_ticks} ticks "
                             f"@ >= {args.reward_threshold}); parking"
                         )
-                        if not done_future.done():
-                            done_future.set_result({
-                                "status": "done",
-                                "reward_prob": prob,
-                                "ticks_above": reward_above_streak,
-                            })
-                        current = None
-                        done_future = None
-                        reward_above_streak = 0
-                        last_logged_policy = None
-                        await op.set_active_operator(None)
+                        await _park({
+                            "status": "done",
+                            "reason": "reward",
+                            "reward_prob": prob,
+                            "ticks_above": reward_above_streak,
+                        })
 
     except KeyboardInterrupt:
         print("\n[run-policy-operator] stopping ...")
     finally:
+        if timeout_task is not None and not timeout_task.done():
+            timeout_task.cancel()
         if done_future is not None and not done_future.done():
             done_future.set_result({"status": "cancelled"})
         try:
