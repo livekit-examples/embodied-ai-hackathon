@@ -43,6 +43,11 @@ OPERATOR_RUN_MOLMO_IDENTITY = "run-molmo-operator"
 # can take tens of seconds; give them plenty of headroom before timing out.
 _OPERATOR_RPC_TIMEOUT_S = 180.0
 
+# Identity of the human participant we expect to converse with. Used both
+# to scope `RoomOptions.participant_identity` and to detect when the user
+# disconnects so we can reset the conversation for the next connection.
+USER_IDENTITY = "user"
+
 # Identity of the participant publishing the workbench overhead camera,
 # and the published track name we subscribe to for visual context.
 ROBOT_IDENTITY = "robot"
@@ -799,11 +804,19 @@ async def orchestrator(ctx: JobContext):
     camera = WorkbenchCamera(ctx.room)
     ctx.add_shutdown_callback(camera.aclose)
 
+    orchestrator = Orchestrator(camera)
+
     await session.start(
-        agent=Orchestrator(camera),
+        agent=orchestrator,
         room=ctx.room,
         room_options=room_io.RoomOptions(
-            participant_identity="user",
+            participant_identity=USER_IDENTITY,
+            # We keep the session open across user disconnects so the worker
+            # stays dispatched to this room and is ready for the user to
+            # rejoin without re-dispatch. The trade-off is that the agent
+            # would otherwise treat a returning user as the same
+            # conversation; the participant_disconnected handler below
+            # resets the chat context so the next connection starts fresh.
             close_on_disconnect=False,
             audio_input=room_io.AudioInputOptions(
                 noise_cancellation=ai_coustics.audio_enhancement(
@@ -812,6 +825,45 @@ async def orchestrator(ctx: JobContext):
             ),
         ),
     )
+
+    # Holds background reset tasks so they aren't garbage-collected before
+    # they finish (RUF006). One task is scheduled per user disconnect event.
+    reset_tasks: set[asyncio.Task] = set()
+
+    async def _reset_user_conversation() -> None:
+        logger.info("User disconnected; resetting chat context for next connection")
+        # Stop any in-progress agent speech and WAIT for the interruption
+        # to finish committing its partial transcript before we wipe the
+        # chat context. If we don't await, the interrupt's chat-context
+        # commit lands after our update_chat_ctx() and the next connection
+        # sees the previous turn's assistant message instead of a fresh
+        # history. The returned future "completes when the interruption is
+        # fully processed and chat context has been updated".
+        try:
+            interrupted = session.interrupt()
+        except RuntimeError:
+            # AgentSession not running (already shut down); nothing to do.
+            return
+        except Exception:
+            logger.exception("interrupt() failed during user-disconnect reset")
+        else:
+            try:
+                await interrupted
+            except Exception:
+                logger.exception("Awaiting interrupt() failed during user-disconnect reset")
+        try:
+            await orchestrator.update_chat_ctx(ChatContext())
+        except Exception:
+            logger.exception("Failed to reset chat context after user disconnect")
+
+    def _on_participant_disconnected(participant: rtc.RemoteParticipant) -> None:
+        if participant.identity != USER_IDENTITY:
+            return
+        task = asyncio.create_task(_reset_user_conversation())
+        reset_tasks.add(task)
+        task.add_done_callback(reset_tasks.discard)
+
+    ctx.room.on("participant_disconnected", _on_participant_disconnected)
 
     # Dev shortcut: simulate a user utterance at launch so we can iterate on
     # plan_and_execute without speaking into a mic each time. Set the env var
