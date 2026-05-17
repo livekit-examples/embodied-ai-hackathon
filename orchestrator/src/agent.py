@@ -219,7 +219,7 @@ async def _execute_run_policy(step: RunPolicy, local_participant) -> None:
     await local_participant.perform_rpc(
         destination_identity=OPERATOR_RUN_POLICY_IDENTITY,
         method="run_policy",
-        payload=step.policy,
+        payload=json.dumps({"policy": step.policy, "side": step.arm}),
         response_timeout=_OPERATOR_RPC_TIMEOUT_S,
     )
 
@@ -295,7 +295,6 @@ async def execute_plan(ctx: AsyncRunContext, plan: Plan, pub: "PlanProgress") ->
     for i, step in enumerate(plan.steps):
         label = _describe_step(step)
         await pub.set_step_status(i, "in_progress")
-        await ctx.update(label)
         await _execute_step(step, room)
         await pub.set_step_status(i, "completed")
     await pub.set_completed()
