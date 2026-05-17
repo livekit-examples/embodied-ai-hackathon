@@ -3,6 +3,7 @@ import base64
 import json
 import logging
 import textwrap
+import time
 from contextlib import asynccontextmanager, suppress
 from typing import Annotated, Literal
 
@@ -42,10 +43,18 @@ OPERATOR_RUN_MOLMO_IDENTITY = "run-molmo-operator"
 # can take tens of seconds; give them plenty of headroom before timing out.
 _OPERATOR_RPC_TIMEOUT_S = 180.0
 
+# Identity of the human participant we expect to converse with. Used both
+# to scope `RoomOptions.participant_identity` and to detect when the user
+# disconnects so we can reset the conversation for the next connection.
+USER_IDENTITY = "user"
+
 # Identity of the participant publishing the workbench overhead camera,
 # and the published track name we subscribe to for visual context.
 ROBOT_IDENTITY = "robot"
 OVERHEAD_CAMERA_TRACK_NAME = "overhead_camera"
+
+# Maximum age (seconds) for a buffered frame to be considered fresh enough to act on.
+_MAX_FRAME_AGE_S = 5.0
 
 
 class WorkbenchCamera:
@@ -53,13 +62,18 @@ class WorkbenchCamera:
 
     Frames are consumed in the background; callers read `latest_frame` to get
     the most recent `rtc.VideoFrame` (or `None` if the robot hasn't connected
-    yet or has disconnected). The latest frame is cleared on
-    `track_unsubscribed` so we never feed stale imagery to the planner.
+    yet, has disconnected, or the stream has stalled). The buffered frame is
+    cleared eagerly on `track_unsubscribed` and when the reader loop exits,
+    and lazily on read if it has aged past `_MAX_FRAME_AGE_S` — so we never
+    feed stale imagery to the planner.
     """
 
     def __init__(self, room: rtc.Room) -> None:
         self._room = room
         self._latest_frame: rtc.VideoFrame | None = None
+        # Monotonic timestamp of the last frame assigned to `_latest_frame`.
+        # Only meaningful while `_latest_frame is not None`.
+        self._latest_frame_at: float = 0.0
         self._stream: rtc.VideoStream | None = None
         self._reader_task: asyncio.Task | None = None
         # Holds background stream-close tasks so they aren't garbage-collected
@@ -81,7 +95,39 @@ class WorkbenchCamera:
 
     @property
     def latest_frame(self) -> rtc.VideoFrame | None:
+        """Most recent buffered frame, or `None` if missing or stale.
+
+        Drops and returns `None` if the buffered frame is older than
+        `_MAX_FRAME_AGE_S`. This catches stalls where the track stays
+        subscribed but frames stop flowing (publisher hang, silent network
+        drop, etc.) and the unsubscribe handler never fires. Suitable for
+        non-critical callers (e.g. opportunistically attaching a frame to
+        a chat turn) that should silently tolerate absence.
+        """
+        if self._latest_frame is None:
+            return None
+        if time.monotonic() - self._latest_frame_at > _MAX_FRAME_AGE_S:
+            logger.warning(
+                "overhead_camera frame is stale (>%.1fs old); clearing",
+                _MAX_FRAME_AGE_S,
+            )
+            self._latest_frame = None
+            return None
         return self._latest_frame
+
+    def require_fresh_frame(self) -> rtc.VideoFrame | None:
+        """Return the latest fresh frame, logging a warning if unavailable.
+
+        Convenience for tools that gate execution on having a current view
+        of the workbench: same return value as `latest_frame`, but logs a
+        consistent warning across call sites when no frame is available.
+        Callers should still handle `None` (typically by returning
+        `_NO_CAMERA_ERROR` to the LLM).
+        """
+        frame = self.latest_frame
+        if frame is None:
+            logger.warning("no overhead_camera frame available; refusing to act")
+        return frame
 
     def _on_track_subscribed(
         self,
@@ -122,8 +168,15 @@ class WorkbenchCamera:
             try:
                 async for event in stream:
                     self._latest_frame = event.frame
+                    self._latest_frame_at = time.monotonic()
             except Exception:
                 logger.exception("overhead_camera reader failed")
+            finally:
+                # Stream ended (publisher unpublished, track ended, reader
+                # cancelled, etc.) without necessarily routing through the
+                # `track_unsubscribed` handler — clear so we don't keep
+                # serving the last good frame indefinitely.
+                self._latest_frame = None
 
         self._reader_task = asyncio.create_task(read_stream())
 
@@ -153,6 +206,13 @@ class WorkbenchCamera:
 # Encode frames at their native resolution (the overhead camera publishes at
 # 640x480, which is already small and detailed enough for tool recognition).
 _FRAME_ENCODE_OPTIONS = EncodeOptions(format="JPEG")
+
+
+# Returned by every robot-controlling tool when no overhead camera frame is available.
+_NO_CAMERA_ERROR = (
+    "Error: no overhead camera feed available; refusing to act without "
+    "visual confirmation of the workbench."
+)
 
 
 def _frame_to_image_content(frame: rtc.VideoFrame) -> ImageContent:
@@ -220,7 +280,7 @@ async def _execute_run_policy(step: RunPolicy, local_participant) -> None:
     await local_participant.perform_rpc(
         destination_identity=OPERATOR_RUN_POLICY_IDENTITY,
         method="run_policy",
-        payload=json.dumps({"policy": step.policy, "side": step.arm}),
+        payload=json.dumps({"policy": step.policy, "side": "right"}),
         response_timeout=_OPERATOR_RPC_TIMEOUT_S,
     )
 
@@ -385,6 +445,12 @@ _PLANNER_SYSTEM_PROMPT = textwrap.dedent(
       in the image.
     - Use the minimum number of steps needed. Do not invent extra steps.
     - Pick `arm` based on which side of the toolbench the object is on.
+    - Every `pick_up` MUST be immediately preceded by a `move_to` targeting
+      the object being picked up, even if the same arm just acted at that
+      location (e.g. after a `put_down` or earlier `pick_up`). The arm's
+      pre-grasp pose is not guaranteed to be over the object — objects can
+      roll, settle, or be dropped out of reach — so always re-localize with
+      a fresh `move_to` before each `pick_up`.
     """
 )
 
@@ -547,15 +613,9 @@ class PlannerToolset(AsyncToolset):
         ctx.disallow_interruptions()
         logger.info("Planning task: %s", task_description)
 
-        frame = self._camera.latest_frame
+        frame = self._camera.require_fresh_frame()
         if frame is None:
-            logger.warning(
-                "plan_and_execute invoked but no overhead_camera frame is available"
-            )
-            return (
-                "Error: no overhead camera feed available; cannot plan without "
-                "seeing the workbench."
-            )
+            return _NO_CAMERA_ERROR
 
         await ctx.update(f"Planning how to {task_description}")
 
@@ -611,11 +671,11 @@ class PlannerToolset(AsyncToolset):
         """Hand control to the MolmoAct2 VLA policy with a natural-language prompt.
 
         Reserved for requests where the user EXPLICITLY names `run_molmo` (e.g.
-        "pick this up using run_molmo", "use run_molmo to grab the screwdriver",
+        "pick this up using molmo", "use molmo to grab the screwdriver",
         "run molmo to put away the hammer"). Do NOT call this for ordinary
         pick-up / put-away / cleanup requests — those are handled by
         `plan_and_execute`. If the user just says "pick this up" without
-        naming run_molmo, use `plan_and_execute` instead.
+        naming molmo, use `plan_and_execute` instead.
 
         Args:
             prompt: A short natural-language instruction passed directly to the
@@ -625,6 +685,8 @@ class PlannerToolset(AsyncToolset):
         """
         ctx.disallow_interruptions()
         logger.info("User-invoked run_molmo: %s", prompt)
+        if self._camera.require_fresh_frame() is None:
+            return _NO_CAMERA_ERROR
         await ctx.update(f"Running molmo policy: {prompt}")
         error = await _send_run_molmo(ctx, prompt)
         if error is not None:
@@ -675,6 +737,14 @@ class Orchestrator(Agent):
                 plain language and only mention details the user can act on (e.g. which step failed, or
                 that the robot couldn't reach / grasp something). Do not read out the raw error text
                 verbatim, and do not retry automatically.
+
+                `plan_and_execute` and `run_molmo` may also refuse with an error mentioning that no
+                overhead camera feed is available. The workbench camera is required for safe motion
+                planning, so if you see that error, briefly tell the user the camera is offline and
+                ask them to check it before trying again. Do not retry the tool until the user
+                indicates the camera is back. `reset_pose` and `release_gripper` remain available
+                even when the camera is offline, since they are fixed motions that don't depend on
+                seeing the workbench.
 
                 If the user explicitly asks the robot to reset, park, go home, return to its starting
                 position, or get out of the way, call the `reset_pose` tool.
@@ -734,11 +804,19 @@ async def orchestrator(ctx: JobContext):
     camera = WorkbenchCamera(ctx.room)
     ctx.add_shutdown_callback(camera.aclose)
 
+    orchestrator = Orchestrator(camera)
+
     await session.start(
-        agent=Orchestrator(camera),
+        agent=orchestrator,
         room=ctx.room,
         room_options=room_io.RoomOptions(
-            participant_identity="user",
+            participant_identity=USER_IDENTITY,
+            # We keep the session open across user disconnects so the worker
+            # stays dispatched to this room and is ready for the user to
+            # rejoin without re-dispatch. The trade-off is that the agent
+            # would otherwise treat a returning user as the same
+            # conversation; the participant_disconnected handler below
+            # resets the chat context so the next connection starts fresh.
             close_on_disconnect=False,
             audio_input=room_io.AudioInputOptions(
                 noise_cancellation=ai_coustics.audio_enhancement(
@@ -747,6 +825,45 @@ async def orchestrator(ctx: JobContext):
             ),
         ),
     )
+
+    # Holds background reset tasks so they aren't garbage-collected before
+    # they finish (RUF006). One task is scheduled per user disconnect event.
+    reset_tasks: set[asyncio.Task] = set()
+
+    async def _reset_user_conversation() -> None:
+        logger.info("User disconnected; resetting chat context for next connection")
+        # Stop any in-progress agent speech and WAIT for the interruption
+        # to finish committing its partial transcript before we wipe the
+        # chat context. If we don't await, the interrupt's chat-context
+        # commit lands after our update_chat_ctx() and the next connection
+        # sees the previous turn's assistant message instead of a fresh
+        # history. The returned future "completes when the interruption is
+        # fully processed and chat context has been updated".
+        try:
+            interrupted = session.interrupt()
+        except RuntimeError:
+            # AgentSession not running (already shut down); nothing to do.
+            return
+        except Exception:
+            logger.exception("interrupt() failed during user-disconnect reset")
+        else:
+            try:
+                await interrupted
+            except Exception:
+                logger.exception("Awaiting interrupt() failed during user-disconnect reset")
+        try:
+            await orchestrator.update_chat_ctx(ChatContext())
+        except Exception:
+            logger.exception("Failed to reset chat context after user disconnect")
+
+    def _on_participant_disconnected(participant: rtc.RemoteParticipant) -> None:
+        if participant.identity != USER_IDENTITY:
+            return
+        task = asyncio.create_task(_reset_user_conversation())
+        reset_tasks.add(task)
+        task.add_done_callback(reset_tasks.discard)
+
+    ctx.room.on("participant_disconnected", _on_participant_disconnected)
 
     # Dev shortcut: simulate a user utterance at launch so we can iterate on
     # plan_and_execute without speaking into a mic each time. Set the env var
