@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Standalone Portal robot runtime for a leslider SO-101 follower."
 requires-python = ">=3.12,<3.13"
 dependencies = [
-    "livekit-portal>=0.2.1",
+    "livekit-portal>=0.2.2",
     "livekit-api>=0.7",
     "lerobot[feetech]>=0.5",
     "lerobot_robot_so101_slider",

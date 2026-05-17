@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Human teleop operator for the leslider robot over livekit-portal. SO-101 leader arm + arrow-key slider drive. No data recording."
 requires-python = ">=3.12,<3.13"
 dependencies = [
-    "livekit-portal>=0.2.1",
+    "livekit-portal>=0.2.2",
     "livekit-api>=0.7",
     "lerobot[feetech]>=0.5",
     "lerobot_teleoperator_so101_with_slider",

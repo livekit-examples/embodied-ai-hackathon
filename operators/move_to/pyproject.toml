@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Perception-only `move_to` operator: joins a Portal room, watches the overhead camera, and answers move_to(description) RPCs by asking Moondream Cloud where the described object is in the latest frame."
 requires-python = ">=3.12,<3.13"
 dependencies = [
-    "livekit-portal>=0.2.1",
+    "livekit-portal>=0.2.2",
     "livekit-api>=0.7",
     "moondream>=0.1",
     "numpy>=1.24",

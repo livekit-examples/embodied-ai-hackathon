@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Human-in-the-loop teleop + recording on top of livekit-portal. SO-101-on-linear-slider (leslider) driven by a remote operator; the operator side records LeRobotDataset episodes and can hand off to a policy."
 requires-python = ">=3.12,<3.13"
 dependencies = [
-    "livekit-portal>=0.2.1",
+    "livekit-portal>=0.2.2",
     "livekit-api>=0.7",
     "lerobot[feetech]>=0.5",
     "lerobot_robot_so101_slider",
