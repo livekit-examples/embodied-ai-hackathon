@@ -46,7 +46,7 @@ All datasets are `LeRobotDataset` v3.0 captures collected at SPC on the leslider
 
 | Model                                                                                     | What                                                                         | Trained on                                          |
 | ----------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- | --------------------------------------------------- |
-| _pick-stuff ACT policy (TBD)_                                                             | ACT policy that drives `run_policy pick_up`.                                 | `binhpham/spc-pick-stuff` (the merged pick corpus). |
+| [`binhpham/spc-pick-stuff-act`](https://huggingface.co/binhpham/spc-pick-stuff-act)        | ACT policy that drives `run_policy pick_up`.                                 | `binhpham/spc-pick-stuff` (the merged pick corpus). |
 | [`binhpham/spc-pick-stuff-reward`](https://huggingface.co/binhpham/spc-pick-stuff-reward) | Sparse-reward classifier that signals when the `pick_up` ACT policy is done. | `binhpham/spc-pick-stuff`.                          |
 | [`binhpham/molmoact2-leslider`](https://huggingface.co/binhpham/molmoact2-leslider)       | MolmoAct2 fine-tuned for the leslider rig. Powers `run_molmo`.               | All SPC pick captures.                              |
 
