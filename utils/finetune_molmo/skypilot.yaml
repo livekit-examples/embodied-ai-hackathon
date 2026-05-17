@@ -1,0 +1,55 @@
+name: finetune-molmo
+
+# MolmoAct2 fine-tuning needs more VRAM than ACT. The MolmoAct2 LeRobot
+# docs report:
+#   action-expert-only, bs=8:  16.5 GiB peak
+#   LoRA VLM, both modes, bs=8: 20.2 GiB peak
+#   full FT, bs=8:             48.3 GiB peak
+# A single H100 80GB fits the full-FT path with comfortable headroom.
+resources:
+  cloud: nebius
+  accelerators: H100:1
+  cpus: 8+
+  memory: 32+
+  disk_size: 500
+  use_spot: false
+  autostop:
+    idle_minutes: 10
+    down: false
+
+workdir: .
+
+# Same Nebius bucket mount as policies/act/skypilot.yaml so checkpoints
+# from both trainers land in one place.
+file_mounts:
+  /outputs:
+    source: nebius://lerobot
+    mode: MOUNT
+
+setup: |
+  sudo apt-get update -y
+  sudo apt-get install -y python3-dev libevdev-dev ffmpeg \
+    libavformat-dev libavcodec-dev libavutil-dev libswscale-dev libswresample-dev
+  pip install uv --quiet
+  uv sync
+
+envs:
+  # Override at launch with `sky launch -e DATASET_REPO_ID=you/your-dataset ...`.
+  # IMAGE_KEYS is required for HF-hosted datasets (we can't peek at the
+  # local info.json on the remote box). For two-camera rigs use overhead
+  # first, arm second — that matches the molmo operator's top/side order.
+  DATASET_REPO_ID: local/portal-hitl
+  IMAGE_KEYS: '["observation.images.overhead_camera","observation.images.arm_camera"]'
+  RUN_NAME: molmoact2-leslider
+  NUM_STEPS: "10000"
+  BATCH_SIZE: "8"
+  LR: 1e-5
+  ACTION_EXPERT_LR: 5e-5
+  CHUNK_SIZE: "30"
+  CHECKPOINT_PATH: allenai/MolmoAct2-SO100_101
+  MODEL_DTYPE: bfloat16
+  TRAIN_ACTION_EXPERT_ONLY: "0"
+  ENABLE_LORA_VLM: "0"
+
+run: |
+  uv run python train.py

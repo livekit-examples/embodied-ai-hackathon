@@ -1,0 +1,17 @@
+[project]
+name = "finetune-molmo"
+version = "0.1.0"
+description = "Standalone trainer that fine-tunes MolmoAct2-SO100_101 on a portal-hitl LeRobotDataset. Mirrors policies/act/train.py: same DataLoader + checkpoint patches, same resume protocol, same env-var knobs."
+requires-python = ">=3.12,<3.13"
+
+# `lerobot[molmoact2]` lives on allenai's fork (branch molmoact2-policy).
+# It pins the MolmoAct2 LeRobot policy + the extra deps (transformers,
+# accelerate, peft, ...) the trainer needs.
+dependencies = [
+    "lerobot[molmoact2] @ git+https://github.com/allenai/lerobot.git@molmoact2-policy",
+    "torch>=2.7,<2.11",
+    "numpy>=2.0,<2.3",
+]
+
+# Flat layout: `uv run python train.py` from this directory. No CLI,
+# no package, no wheel. Read train.py top-to-bottom; it is the example.
