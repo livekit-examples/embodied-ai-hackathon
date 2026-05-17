@@ -404,10 +404,14 @@ async def orchestrator(ctx: JobContext):
         preemptive_generation=True,
     )
 
+    await ctx.connect()
+
     await session.start(
         agent=Orchestrator(),
         room=ctx.room,
         room_options=room_io.RoomOptions(
+            participant_identity="user",
+            close_on_disconnect=False,
             audio_input=room_io.AudioInputOptions(
                 noise_cancellation=ai_coustics.audio_enhancement(
                     model=ai_coustics.EnhancerModel.QUAIL_VF_S
@@ -415,8 +419,6 @@ async def orchestrator(ctx: JobContext):
             ),
         ),
     )
-
-    await ctx.connect()
 
     # Dev shortcut: simulate a user utterance at launch so we can iterate on
     # plan_and_execute without speaking into a mic each time. Set the env var

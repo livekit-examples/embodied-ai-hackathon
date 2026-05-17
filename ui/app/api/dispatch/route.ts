@@ -48,22 +48,22 @@ export async function POST() {
     // Clear all prior dispatches and create a fresh one so the user always
     // lands in a room with exactly one freshly-dispatched agent.
     const dispatchClient = new AgentDispatchClient(LIVEKIT_URL, API_KEY, API_SECRET);
-    const existing = await dispatchClient.listDispatch(roomName);
-    console.log(
-      `[dispatch] room "${roomName}": found ${existing.length} existing dispatch(es), clearing all`
-    );
-    console.log(existing);
-    await Promise.all(
-      existing.map(async (d) => {
-        console.log(`[dispatch]   deleting dispatch id=${d.id} agentName=${d.agentName}`);
-        await dispatchClient.deleteDispatch(d.id, roomName);
-      })
-    );
-    console.log(`[dispatch] creating fresh "${AGENT_NAME}" dispatch in "${roomName}"`);
-    const created = await dispatchClient.createDispatch(roomName, AGENT_NAME);
-    console.log(`[dispatch]   created dispatch id=${created.id}`);
+    // const existing = await dispatchClient.listDispatch(roomName);
+    // console.log(
+    //   `[dispatch] room "${roomName}": found ${existing.length} existing dispatch(es), clearing all`
+    // );
+    // console.log(existing);
+    // await Promise.all(
+    //   existing.map(async (d) => {
+    //     console.log(`[dispatch]   deleting dispatch id=${d.id} agentName=${d.agentName}`);
+    //     await dispatchClient.deleteDispatch(d.id, roomName);
+    //   })
+    // );
+    //console.log(`[dispatch] creating fresh "${AGENT_NAME}" dispatch in "${roomName}"`);
+    //const created = await dispatchClient.createDispatch(roomName, AGENT_NAME);
+    //console.log(`[dispatch]   created dispatch id=${created.id}`);
 
-    return NextResponse.json({ roomName, dispatchId: created.id });
+    return NextResponse.json({ roomName, dispatchId: "created.id" });
   } catch (error) {
     if (error instanceof Error) {
       console.error(error);
