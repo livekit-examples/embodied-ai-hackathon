@@ -1,0 +1,39 @@
+name: diffusion-portal-hitl
+
+resources:
+  cloud: nebius
+  accelerators: H100:1
+  cpus: 8+
+  memory: 32+
+  disk_size: 500
+  use_spot: true
+  autostop:
+    idle_minutes: 10
+    down: false
+
+workdir: .
+
+file_mounts:
+  /outputs:
+    source: nebius://lerobot
+    mode: MOUNT
+
+setup: |
+  sudo apt-get update -y
+  sudo apt-get install -y python3-dev libevdev-dev ffmpeg \
+    libavformat-dev libavcodec-dev libavutil-dev libswscale-dev libswresample-dev
+  pip install uv --quiet
+  uv sync --only-group train
+
+envs:
+  DATASET_REPO_ID: local/portal-hitl
+  RUN_NAME: diffusion-leslider
+  NUM_STEPS: 20000
+  BATCH_SIZE: 64
+  LR: 1e-4
+  HORIZON: 16
+  N_ACTION_STEPS: 8
+  N_OBS_STEPS: 2
+
+run: |
+  uv run python policies/diffusion/train.py

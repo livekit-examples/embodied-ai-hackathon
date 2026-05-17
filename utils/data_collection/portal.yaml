@@ -1,0 +1,66 @@
+# Wire contract shared by robot.py, teleoperator.py, and policies/<algo>/inference.py.
+#
+# Loaded via `RobotConfig.from_yaml_file(...)` and
+# `OperatorConfig.from_yaml_file(...)`. Identity (session, role) is supplied
+# at the call site so the same file is reusable across all three processes.
+#
+# Hardware = leslider: an SO-101 arm mounted on a linear slider. The six
+# arm motors are position-controlled; the slider is a continuous-rotation
+# motor in velocity mode (so its position would wrap and is not reported,
+# we publish the slider's *velocity*, not position).
+#
+# State and action are intentionally lean (7 fields, no motor currents).
+# Add `*.current` fields to both schemas if you want them, robot.py
+# reads them only when its config flips `read_current=True`.
+
+version: 1
+
+fps: 30
+
+# When a state sample arrives at the operator's synchronizer with no
+# fresh frame inside the sync window, reuse the last good frame instead
+# of dropping the state. We want every robot tick to land in the
+# dataset; a transient camera drop should not punch a hole in the
+# trajectory. The reused frame is at most a couple of ticks old.
+reuse_stale_frames: true
+
+# Operators receive the executed action stream over the wire. The
+# teleoperator needs this to record actions tagged with the correct
+# Action.sender during HITL handoff; the policies don't strictly need
+# it but pay a negligible bandwidth cost for being consistent.
+action_subscription: true
+
+# Single arm-mounted camera on the leslider rig.
+#
+# Codec choice matters for training data quality:
+#   mjpeg (default below): per-frame JPEG, frame-independent decode, no
+#     inter-frame prediction artifacts. Tuneable via `quality` (1..100).
+#     90 is near-lossless on natural images at ~10x compression.
+#   h264: WebRTC media path. Lowest end-to-end latency at scale, but
+#     inter-frame prediction artifacts degrade as training material.
+#   png: lossless byte-stream. ~2-3x compression. Use when bit-exact
+#     frames are required.
+#   raw: uncompressed RGB24. Largest payload; rarely justified.
+videos:
+  - { name: arm_camera, codec: mjpeg, quality: 90 }
+
+# 6 arm motor positions + 1 slider velocity.
+state:
+  - { name: shoulder_pan.pos,  dtype: f32 }
+  - { name: shoulder_lift.pos, dtype: f32 }
+  - { name: elbow_flex.pos,    dtype: f32 }
+  - { name: wrist_flex.pos,    dtype: f32 }
+  - { name: wrist_roll.pos,    dtype: f32 }
+  - { name: gripper.pos,       dtype: f32 }
+  - { name: slider.vel,        dtype: f32 }
+
+# Action mirrors state. Both human teleop (SO-101 leader + arrow-key
+# slider control) and any lerobot policy emit one of these per tick.
+action:
+  - { name: shoulder_pan.pos,  dtype: f32 }
+  - { name: shoulder_lift.pos, dtype: f32 }
+  - { name: elbow_flex.pos,    dtype: f32 }
+  - { name: wrist_flex.pos,    dtype: f32 }
+  - { name: wrist_roll.pos,    dtype: f32 }
+  - { name: gripper.pos,       dtype: f32 }
+  - { name: slider.vel,        dtype: f32 }
