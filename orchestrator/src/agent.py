@@ -3,6 +3,7 @@ import base64
 import json
 import logging
 import textwrap
+import time
 from contextlib import asynccontextmanager, suppress
 from typing import Annotated, Literal
 
@@ -47,19 +48,27 @@ _OPERATOR_RPC_TIMEOUT_S = 180.0
 ROBOT_IDENTITY = "robot"
 OVERHEAD_CAMERA_TRACK_NAME = "overhead_camera"
 
+# Maximum age (seconds) for a buffered frame to be considered fresh enough to act on.
+_MAX_FRAME_AGE_S = 5.0
+
 
 class WorkbenchCamera:
     """Subscribes to the robot's `overhead_camera` track and buffers the latest frame.
 
     Frames are consumed in the background; callers read `latest_frame` to get
     the most recent `rtc.VideoFrame` (or `None` if the robot hasn't connected
-    yet or has disconnected). The latest frame is cleared on
-    `track_unsubscribed` so we never feed stale imagery to the planner.
+    yet, has disconnected, or the stream has stalled). The buffered frame is
+    cleared eagerly on `track_unsubscribed` and when the reader loop exits,
+    and lazily on read if it has aged past `_MAX_FRAME_AGE_S` — so we never
+    feed stale imagery to the planner.
     """
 
     def __init__(self, room: rtc.Room) -> None:
         self._room = room
         self._latest_frame: rtc.VideoFrame | None = None
+        # Monotonic timestamp of the last frame assigned to `_latest_frame`.
+        # Only meaningful while `_latest_frame is not None`.
+        self._latest_frame_at: float = 0.0
         self._stream: rtc.VideoStream | None = None
         self._reader_task: asyncio.Task | None = None
         # Holds background stream-close tasks so they aren't garbage-collected
@@ -81,6 +90,22 @@ class WorkbenchCamera:
 
     @property
     def latest_frame(self) -> rtc.VideoFrame | None:
+        """Most recent buffered frame, or `None` if missing or stale.
+
+        Drops and returns `None` if the buffered frame is older than
+        `_MAX_FRAME_AGE_S`. This catches stalls where the track stays
+        subscribed but frames stop flowing (publisher hang, silent network
+        drop, etc.) and the unsubscribe handler never fires.
+        """
+        if self._latest_frame is None:
+            return None
+        if time.monotonic() - self._latest_frame_at > _MAX_FRAME_AGE_S:
+            logger.warning(
+                "overhead_camera frame is stale (>%.1fs old); clearing",
+                _MAX_FRAME_AGE_S,
+            )
+            self._latest_frame = None
+            return None
         return self._latest_frame
 
     def _on_track_subscribed(
@@ -122,8 +147,15 @@ class WorkbenchCamera:
             try:
                 async for event in stream:
                     self._latest_frame = event.frame
+                    self._latest_frame_at = time.monotonic()
             except Exception:
                 logger.exception("overhead_camera reader failed")
+            finally:
+                # Stream ended (publisher unpublished, track ended, reader
+                # cancelled, etc.) without necessarily routing through the
+                # `track_unsubscribed` handler — clear so we don't keep
+                # serving the last good frame indefinitely.
+                self._latest_frame = None
 
         self._reader_task = asyncio.create_task(read_stream())
 
@@ -153,6 +185,13 @@ class WorkbenchCamera:
 # Encode frames at their native resolution (the overhead camera publishes at
 # 640x480, which is already small and detailed enough for tool recognition).
 _FRAME_ENCODE_OPTIONS = EncodeOptions(format="JPEG")
+
+
+# Returned by every robot-controlling tool when no overhead camera frame is available.
+_NO_CAMERA_ERROR = (
+    "Error: no overhead camera feed available; refusing to act without "
+    "visual confirmation of the workbench."
+)
 
 
 def _frame_to_image_content(frame: rtc.VideoFrame) -> ImageContent:
@@ -552,10 +591,7 @@ class PlannerToolset(AsyncToolset):
             logger.warning(
                 "plan_and_execute invoked but no overhead_camera frame is available"
             )
-            return (
-                "Error: no overhead camera feed available; cannot plan without "
-                "seeing the workbench."
-            )
+            return _NO_CAMERA_ERROR
 
         await ctx.update(f"Planning how to {task_description}")
 
@@ -625,6 +661,9 @@ class PlannerToolset(AsyncToolset):
         """
         ctx.disallow_interruptions()
         logger.info("User-invoked run_molmo: %s", prompt)
+        if self._camera.latest_frame is None:
+            logger.warning("run_molmo blocked: no overhead_camera frame available")
+            return _NO_CAMERA_ERROR
         await ctx.update(f"Running molmo policy: {prompt}")
         error = await _send_run_molmo(ctx, prompt)
         if error is not None:
@@ -675,6 +714,14 @@ class Orchestrator(Agent):
                 plain language and only mention details the user can act on (e.g. which step failed, or
                 that the robot couldn't reach / grasp something). Do not read out the raw error text
                 verbatim, and do not retry automatically.
+
+                `plan_and_execute` and `run_molmo` may also refuse with an error mentioning that no
+                overhead camera feed is available. The workbench camera is required for safe motion
+                planning, so if you see that error, briefly tell the user the camera is offline and
+                ask them to check it before trying again. Do not retry the tool until the user
+                indicates the camera is back. `reset_pose` and `release_gripper` remain available
+                even when the camera is offline, since they are fixed motions that don't depend on
+                seeing the workbench.
 
                 If the user explicitly asks the robot to reset, park, go home, return to its starting
                 position, or get out of the way, call the `reset_pose` tool.
