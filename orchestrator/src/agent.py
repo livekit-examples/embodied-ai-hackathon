@@ -440,6 +440,12 @@ _PLANNER_SYSTEM_PROMPT = textwrap.dedent(
       in the image.
     - Use the minimum number of steps needed. Do not invent extra steps.
     - Pick `arm` based on which side of the toolbench the object is on.
+    - Every `pick_up` MUST be immediately preceded by a `move_to` targeting
+      the object being picked up, even if the same arm just acted at that
+      location (e.g. after a `put_down` or earlier `pick_up`). The arm's
+      pre-grasp pose is not guaranteed to be over the object — objects can
+      roll, settle, or be dropped out of reach — so always re-localize with
+      a fresh `move_to` before each `pick_up`.
     """
 )
 
