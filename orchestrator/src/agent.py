@@ -316,8 +316,7 @@ _PLANNER_SYSTEM_PROMPT = textwrap.dedent(
       e.g. "red screwdriver", "claw hammer") that match what is visible
       in the image.
     - Use the minimum number of steps needed. Do not invent extra steps.
-    - Pick `arm` based on which side of the toolbench the object is on,
-      preferring "right" when ambiguous.
+    - Pick `arm` based on which side of the toolbench the object is on.
     """
 )
 
