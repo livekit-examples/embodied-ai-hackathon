@@ -95,7 +95,9 @@ class WorkbenchCamera:
         Drops and returns `None` if the buffered frame is older than
         `_MAX_FRAME_AGE_S`. This catches stalls where the track stays
         subscribed but frames stop flowing (publisher hang, silent network
-        drop, etc.) and the unsubscribe handler never fires.
+        drop, etc.) and the unsubscribe handler never fires. Suitable for
+        non-critical callers (e.g. opportunistically attaching a frame to
+        a chat turn) that should silently tolerate absence.
         """
         if self._latest_frame is None:
             return None
@@ -107,6 +109,20 @@ class WorkbenchCamera:
             self._latest_frame = None
             return None
         return self._latest_frame
+
+    def require_fresh_frame(self) -> rtc.VideoFrame | None:
+        """Return the latest fresh frame, logging a warning if unavailable.
+
+        Convenience for tools that gate execution on having a current view
+        of the workbench: same return value as `latest_frame`, but logs a
+        consistent warning across call sites when no frame is available.
+        Callers should still handle `None` (typically by returning
+        `_NO_CAMERA_ERROR` to the LLM).
+        """
+        frame = self.latest_frame
+        if frame is None:
+            logger.warning("no overhead_camera frame available; refusing to act")
+        return frame
 
     def _on_track_subscribed(
         self,
@@ -586,11 +602,8 @@ class PlannerToolset(AsyncToolset):
         ctx.disallow_interruptions()
         logger.info("Planning task: %s", task_description)
 
-        frame = self._camera.latest_frame
+        frame = self._camera.require_fresh_frame()
         if frame is None:
-            logger.warning(
-                "plan_and_execute invoked but no overhead_camera frame is available"
-            )
             return _NO_CAMERA_ERROR
 
         await ctx.update(f"Planning how to {task_description}")
@@ -661,8 +674,7 @@ class PlannerToolset(AsyncToolset):
         """
         ctx.disallow_interruptions()
         logger.info("User-invoked run_molmo: %s", prompt)
-        if self._camera.latest_frame is None:
-            logger.warning("run_molmo blocked: no overhead_camera frame available")
+        if self._camera.require_fresh_frame() is None:
             return _NO_CAMERA_ERROR
         await ctx.update(f"Running molmo policy: {prompt}")
         error = await _send_run_molmo(ctx, prompt)
