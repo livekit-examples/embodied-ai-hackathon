@@ -6,3 +6,7 @@ soxr-sys/test-output.wav
 .env
 .cursor
 __pycache__
+.env.*
+!.env.example
+
+.claude/

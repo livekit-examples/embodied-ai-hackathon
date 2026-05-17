@@ -102,32 +102,6 @@ Environment knobs (in addition to LIVEKIT_* and MOONDREAM_API_KEY):
                               falls back to the flat
                               ``SLIDER_TAG_OFFSET_X_PX``.
 
-Knobs for the ``reset_pose`` RPC:
-
-* ``RESET_POSE_SHOULDER_PAN`` / ``RESET_POSE_SHOULDER_LIFT`` /
-  ``RESET_POSE_ELBOW_FLEX``   / ``RESET_POSE_WRIST_FLEX``    /
-  ``RESET_POSE_WRIST_ROLL``   / ``RESET_POSE_GRIPPER``
-                              per-joint target ``.pos`` values for the
-                              rest pose. Units match whatever the
-                              follower reports (degrees for the
-                              SO-101 lerobot follower). Any unset
-                              joint falls back to the leslider-tuned
-                              defaults in ``RESET_POSE_DEFAULTS``;
-                              override here if your rig parks in a
-                              different pose.
-* ``RESET_POSE_MAX_STEP``     maximum per-tick per-joint position
-                              delta sent to the arm. Caps the speed of
-                              the ramp so a reset from an extreme
-                              pose doesn't jerk the arm. Default
-                              ``2.0`` (units/tick; at 30 fps that's
-                              60 units/s).
-* ``RESET_POSE_TOLERANCE``    each joint must land within this many
-                              units of its target before the RPC
-                              declares ``reached``. Default ``2.0``.
-* ``RESET_POSE_TIMEOUT_S``    hard timeout on the loop. RPC exits
-                              with ``reason=timeout`` if it elapses
-                              before convergence. Default ``10``.
-
 Usage::
 
     cp .env.example .env  # set LIVEKIT_* and MOONDREAM_API_KEY
@@ -565,6 +539,24 @@ async def main() -> None:
                         )
                         continue
                     consecutive_inside = 0
+
+                    # Refuse to drive the slider past its safe pixel-X
+                    # window. delta_x_px > 0 commands motion toward
+                    # DECREASING tag X (see direction logic below), so
+                    # if the tag is already at/past `tag_min` we must
+                    # not push further; symmetric on the high side at
+                    # `tag_max`. The reached check above takes priority
+                    # so a target inside the safe window can still be
+                    # met right at the boundary.
+                    if (tag[0] <= tag_min and delta_x_px > 0) or (
+                        tag[0] >= tag_max and delta_x_px < 0
+                    ):
+                        print(
+                            f"[move-to-op] tag at limit: tag_x={tag[0]:.1f} "
+                            f"range=[{tag_min},{tag_max}] delta={delta_x_px:+.1f}"
+                        )
+                        reason = "at_limit"
+                        break
 
                     # Refuse to drive the slider past its safe pixel-X
                     # window. delta_x_px > 0 commands motion toward

@@ -36,10 +36,10 @@ uv run python smoke_test.py --model /local/path/to/checkpoint
 ## Live inference
 
 ```bash
-uv run python inference.py
+uv run python molmo_operator.py
 ```
 
-The policy joins the configured LiveKit room as `policy-molmo`. The teleop side
+The policy joins the configured LiveKit room as `run-molmo-operator`. The teleop side
 gates handoff by cycling the active operator with `c`. Molmo predicts the
 6-DOF SO-101 arm action; this wrapper appends `slider.vel = 0.0` so the linear
 slider parks while the arm runs autonomously.
@@ -47,8 +47,33 @@ slider parks while the arm runs autonomously.
 Useful environment overrides:
 
 ```bash
-LESLIDER_TASK="Pick the blue cube up and hold it" uv run python inference.py
-MOLMO_NUM_STEPS=20 MOLMO_DTYPE=bfloat16 uv run python inference.py
+LESLIDER_TASK="Pick the blue cube up and hold it" uv run python molmo_operator.py
+MOLMO_NUM_STEPS=20 MOLMO_DTYPE=bfloat16 uv run python molmo_operator.py
+```
+
+### `run_molmo` RPC
+
+The operator registers a `run_molmo(prompt)` RPC that retargets the policy
+to a new task string and claims the active-operator slot. The reply is
+blocked until a timeout fires (default 30s), at which point the operator
+parks (releases active-operator) and the RPC returns:
+
+```json
+{"prompt": "...", "active_operator": "run-molmo-operator", "status": "done", "reason": "timeout", "seconds": 30.0}
+```
+
+A newer `run_molmo` call preempts an in-flight one; the preempted caller
+gets `{"status": "preempted", ...}`.
+
+Configure the timeout with `--timeout SECONDS` or `MOLMO_TIMEOUT=SECONDS`.
+Pass `--timeout 0` to disable blocking (the RPC returns immediately with
+`{"status": "no_timeout", ...}` and the operator keeps driving until a
+peer claims the active-operator slot via `c`).
+
+```bash
+uv run python molmo_operator.py --timeout 45
+MOLMO_TIMEOUT=10 uv run python molmo_operator.py
+uv run python molmo_operator.py --timeout 0
 ```
 
 ## Cloud
@@ -71,4 +96,4 @@ scripts/launch_inference.sh
 
 For live inference, `skypilot/inference.yaml` mounts `.env` to the cloud VM as
 `~/.leslider-molmo.env`, copies it into the workdir at runtime, then runs
-`uv run python inference.py`.
+`uv run python molmo_operator.py`.

@@ -1,0 +1,33 @@
+# Secrets. Anything matching .env* except the committed example.
+.env
+.env.*
+!.env.example
+
+# Recorded datasets. teleoperator.py writes to data/<repo_id>/ by
+# default (override with PORTAL_HITL_DATASET_ROOT). Keep out of git;
+# push these to HF Hub or object storage instead.
+/data/
+
+# Training output. policies/<algo>/train.py writes to /outputs/<RUN_NAME>/,
+# which is system-root by default, but mirror the local form too in
+# case anyone overrides into the repo.
+/outputs/
+/checkpoints/
+
+# uv / Python.
+.venv/
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+
+# Lint / type-check caches.
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/
+
+# IDE / OS.
+.vscode/
+.idea/
+.DS_Store
+.claude/

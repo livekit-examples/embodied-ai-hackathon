@@ -62,6 +62,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import logging
 import os
 import sys
@@ -78,6 +79,8 @@ from livekit.portal import (
     Observation,
     Operator,
     OperatorConfig,
+    RpcError,
+    RpcInvocationData,
     frame_bytes_to_numpy_rgb,
 )
 
@@ -85,8 +88,18 @@ ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 from _common import env_int, env_str, load_env, mint_token, pace, required_env  # noqa: E402
 
-IDENTITY = "policy-molmo"
-CONFIG_PATH = ROOT.parent.parent / "portal.yaml"
+IDENTITY = "run-molmo-operator"
+
+def _resolve_config_path() -> Path:
+    override = os.environ.get("PORTAL_CONFIG")
+    if override:
+        return Path(override)
+    for candidate in (ROOT / "portal.yaml", ROOT.parent.parent / "portal.yaml"):
+        if candidate.exists():
+            return candidate
+    return ROOT.parent.parent / "portal.yaml"
+
+CONFIG_PATH = _resolve_config_path()
 
 # 6-DOF SO-101 state/action expected by MolmoAct2-SO100_101, in the
 # follower's native order (matches the SO-100/101 dataset features used
@@ -101,6 +114,19 @@ POLICY_STATE_KEYS = (
     "gripper.pos",
 )
 POLICY_ACTION_KEYS = POLICY_STATE_KEYS
+
+# Per-joint sign + offset to bridge the rig's calibration to the
+# SO-100/SO-101 dataset convention the policy was trained in. These are
+# the canonical LeRobot v3.0 → v2.1 values documented at
+# https://huggingface.co/docs/lerobot/backwardcomp — sign flip on
+# shoulder_lift, +90° on shoulder_lift and elbow_flex.
+# Applied on policy input (state) and inverted on policy output (action)
+# so the closed loop stays consistent:
+#   policy_state = signs * rig_state    + offsets
+#   rig_action   = (policy_action - offsets) * signs
+# Both arrays are aligned with POLICY_STATE_KEYS.
+JOINT_SIGNS = np.array([1.0, -1.0, 1.0, 1.0, 1.0, 1.0], dtype=np.float32)
+JOINT_OFFSETS_DEG = np.array([0.0, 90.0, 90.0, 0.0, 0.0, 0.0], dtype=np.float32)
 
 # Slider passthrough. The MolmoAct2 checkpoint has no notion of the
 # slider; we always emit zero velocity so the base parks under autonomy.
@@ -142,11 +168,13 @@ def _parse_dtype(name: str) -> torch.dtype:
 
 
 def _build_policy_state(state_typed: dict) -> np.ndarray:
-    """Strip the slider field and return a 6-dim float32 numpy state."""
-    return np.array(
+    """Strip the slider field and return a 6-dim float32 numpy state in
+    the dataset's calibration convention (signs * rig + offsets)."""
+    rig = np.array(
         [float(state_typed[k]) for k in POLICY_STATE_KEYS],
         dtype=np.float32,
     )
+    return JOINT_SIGNS * rig + JOINT_OFFSETS_DEG
 
 
 def _frame_to_pil(frame: np.ndarray) -> Image.Image:
@@ -160,13 +188,15 @@ def _frame_to_pil(frame: np.ndarray) -> Image.Image:
 
 def _action_dict_from_vec(action_vec) -> dict[str, float]:
     """Build a rig-side 7-dim action dict from a 6-dim policy action,
+    inverting the frame transform (action - offsets) * signs and
     pinning slider velocity to zero."""
-    a = np.asarray(action_vec, dtype=np.float32).reshape(-1).tolist()
-    if len(a) != len(POLICY_ACTION_KEYS):
+    a = np.asarray(action_vec, dtype=np.float32).reshape(-1)
+    if a.shape[0] != len(POLICY_ACTION_KEYS):
         raise ValueError(
-            f"expected {len(POLICY_ACTION_KEYS)}-dim policy action, got {len(a)}"
+            f"expected {len(POLICY_ACTION_KEYS)}-dim policy action, got {a.shape[0]}"
         )
-    out = {k: float(a[i]) for i, k in enumerate(POLICY_ACTION_KEYS)}
+    rig = (a - JOINT_OFFSETS_DEG) * JOINT_SIGNS
+    out = {k: float(rig[i]) for i, k in enumerate(POLICY_ACTION_KEYS)}
     out[SLIDER_KEY] = SLIDER_DEFAULT_VEL
     return out
 
@@ -260,6 +290,15 @@ class MolmoActChunkRunner:
             )
             self._idx = 0
             replanned = True
+            state_pairs = ", ".join(
+                f"{k}={float(v):+.2f}" for k, v in zip(POLICY_STATE_KEYS, state_6)
+            )
+            first = self._chunk[0]
+            action_pairs = ", ".join(
+                f"{k}={float(v):+.2f}" for k, v in zip(POLICY_ACTION_KEYS, first)
+            )
+            print(f"[run-molmo-operator] state_in : {state_pairs}")
+            print(f"[run-molmo-operator] chunk[0] : {action_pairs}")
         action = self._chunk[self._idx]
         self._idx += 1
         return action, replanned
@@ -305,6 +344,14 @@ async def main() -> None:
         help="Forward passes to run before connecting to LiveKit so the "
              "first real chunk doesn't stall the room.",
     )
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=float(os.environ.get("MOLMO_TIMEOUT", "30")),
+        help="Seconds to drive the robot before the run_molmo() RPC returns "
+             "and the operator parks. Set to 0 to disable (RPC returns "
+             "immediately after engaging, pre-timeout behaviour). Default 30s.",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO").upper())
@@ -322,16 +369,16 @@ async def main() -> None:
     # blow up the first forward pass on a CPU dev box.
     enable_cuda_graph = bool(args.cuda_graph and device == "cuda")
     if args.cuda_graph and not enable_cuda_graph:
-        print("[policy-molmo] CUDA not available; disabling enable_cuda_graph")
+        print("[run-molmo-operator] CUDA not available; disabling enable_cuda_graph")
 
     print(
-        f"[policy-molmo] device={device} dtype={args.dtype} model={args.model} "
+        f"[run-molmo-operator] device={device} dtype={args.dtype} model={args.model} "
         f"num_steps={args.num_steps} cuda_graph={enable_cuda_graph}"
     )
 
-    print("[policy-molmo] loading processor ...")
+    print("[run-molmo-operator] loading processor ...")
     processor = AutoProcessor.from_pretrained(args.model, trust_remote_code=True)
-    print("[policy-molmo] loading model ... (this can take a few minutes)")
+    print("[run-molmo-operator] loading model ... (this can take a few minutes)")
     model = AutoModelForImageTextToText.from_pretrained(
         args.model,
         trust_remote_code=True,
@@ -351,7 +398,7 @@ async def main() -> None:
         # The first call (or two, with CUDA graphs) is dramatically
         # slower than steady-state. Bang it out on a dummy obs before
         # we're on the clock so the first real tick doesn't stall.
-        print(f"[policy-molmo] warmup ({args.warmup} forward passes) ...")
+        print(f"[run-molmo-operator] warmup ({args.warmup} forward passes) ...")
         dummy_state = np.zeros(len(POLICY_STATE_KEYS), dtype=np.float32)
         dummy_top = Image.new("RGB", (224, 224), color=(0, 0, 0))
         dummy_side = Image.new("RGB", (224, 224), color=(0, 0, 0))
@@ -361,7 +408,7 @@ async def main() -> None:
                 top_rgb=dummy_top, side_rgb=dummy_side,
                 task=task_prompt, state_6=dummy_state,
             )
-            print(f"[policy-molmo] warmup pass {i+1}/{args.warmup}: "
+            print(f"[run-molmo-operator] warmup pass {i+1}/{args.warmup}: "
                   f"{(time.perf_counter() - t0) * 1000:.0f} ms")
         runner.reset()
 
@@ -376,14 +423,131 @@ async def main() -> None:
 
     op.on_observation(on_observation)
     op.on_active_operator_changed(
-        lambda i: print(f"[policy-molmo] active operator now: {i}")
+        lambda i: print(f"[run-molmo-operator] active operator now: {i}")
     )
 
-    print(f"[policy-molmo] connecting to {url} as '{IDENTITY}' in room '{room}' ...")
+    # Mutable prompt shared with the run_molmo RPC. Reads/writes are
+    # single Python-level rebinds, so no lock is needed on CPython.
+    current_task = task_prompt
+
+    # When a run_molmo() RPC engages the operator with a positive
+    # timeout, we hand it an asyncio.Future that resolves once the
+    # timeout fires (or a newer RPC preempts it). All writes happen on
+    # the asyncio loop so no lock is needed on CPython.
+    done_future: Optional[asyncio.Future] = None
+    timeout_task: Optional[asyncio.Task] = None
+
+    async def _park(result: dict) -> None:
+        nonlocal done_future, timeout_task
+        if done_future is None:
+            return
+        fut = done_future
+        done_future = None
+        if timeout_task is not None and not timeout_task.done():
+            timeout_task.cancel()
+        timeout_task = None
+        if not fut.done():
+            fut.set_result(result)
+        try:
+            await op.set_active_operator(None)
+        except Exception as e:
+            print(f"[run-molmo-operator] release active-operator failed: {e}")
+
+    async def _timeout_watchdog(
+        seconds: float, prompt: str, target_future: asyncio.Future
+    ) -> None:
+        try:
+            await asyncio.sleep(seconds)
+        except asyncio.CancelledError:
+            return
+        if target_future.done() or done_future is not target_future:
+            return
+        print(
+            f"[run-molmo-operator] timeout {seconds:.2f}s elapsed for "
+            f"'{prompt}'; parking"
+        )
+        await _park({
+            "status": "done",
+            "reason": "timeout",
+            "seconds": seconds,
+        })
+
+    async def run_molmo(data: RpcInvocationData) -> str:
+        # Accept either a bare string ("pick up the blue cube") or a
+        # JSON object ({"prompt": "..."}). The continuous tick loop
+        # keeps warm-inferencing; we just retarget it and grab the
+        # active-operator gate so emitted actions get through.
+        nonlocal current_task, done_future, timeout_task
+        payload = (data.payload or "").strip()
+        new_prompt = payload
+        if payload.startswith("{"):
+            try:
+                new_prompt = str(json.loads(payload).get("prompt", "")).strip()
+            except json.JSONDecodeError:
+                raise RpcError.Error(
+                    code=1400,
+                    message="payload was not valid JSON; pass a bare string instead",
+                    data=None,
+                )
+        if not new_prompt:
+            raise RpcError.Error(
+                code=1400, message="empty prompt", data=None
+            )
+
+        current_task = new_prompt
+        # Drop the in-flight chunk so the new prompt takes effect on
+        # the next tick instead of waiting out the current ~1s chunk.
+        runner.reset()
+
+        # Preempt any in-flight run_molmo() so its caller gets a clean
+        # reply rather than hanging on a future we're about to drop.
+        if done_future is not None and not done_future.done():
+            done_future.set_result({"status": "preempted", "prompt": new_prompt})
+        if timeout_task is not None and not timeout_task.done():
+            timeout_task.cancel()
+        timeout_task = None
+        done_future = None
+
+        me_id = op.local_identity()
+        await op.set_active_operator(me_id)
+        print(
+            f"[run-molmo-operator] run_molmo('{new_prompt}') -> "
+            f"active operator -> {me_id} timeout={args.timeout}s"
+        )
+
+        if args.timeout <= 0:
+            return json.dumps({
+                "prompt": new_prompt,
+                "active_operator": me_id,
+                "status": "no_timeout",
+            })
+
+        new_future = asyncio.get_running_loop().create_future()
+        done_future = new_future
+        timeout_task = asyncio.create_task(
+            _timeout_watchdog(args.timeout, new_prompt, new_future)
+        )
+
+        try:
+            result = await new_future
+        except asyncio.CancelledError:
+            if done_future is new_future:
+                await _park({"status": "cancelled"})
+            raise
+
+        return json.dumps({
+            "prompt": new_prompt,
+            "active_operator": me_id,
+            **result,
+        })
+
+    op.register_rpc_method("run_molmo", run_molmo)
+
+    print(f"[run-molmo-operator] connecting to {url} as '{IDENTITY}' in room '{room}' ...")
     await op.connect(url, token)
     me = op.local_identity()
 
-    print(f"[policy-molmo] '{IDENTITY}' in '{room}' @ {fps} fps as '{me}' "
+    print(f"[run-molmo-operator] '{IDENTITY}' in '{room}' @ {fps} fps as '{me}' "
           "(teleop drives handoff via `c`)")
 
     obs_keys_logged = False
@@ -399,7 +563,7 @@ async def main() -> None:
                 empty_obs_count += 1
                 if empty_obs_count in (30, 150, 600):
                     print(
-                        f"[policy-molmo] no observations for {empty_obs_count // 30}s, "
+                        f"[run-molmo-operator] no observations for {empty_obs_count // 30}s, "
                         "is robot.py running and connected to the same room?"
                     )
                 continue
@@ -414,7 +578,7 @@ async def main() -> None:
                 # input.
                 if tick_count == 0:
                     print(
-                        "[policy-molmo] waiting for both cameras "
+                        "[run-molmo-operator] waiting for both cameras "
                         f"({TOP_CAMERA}, {SIDE_CAMERA}) ..."
                     )
                 continue
@@ -430,7 +594,7 @@ async def main() -> None:
             if not obs_keys_logged:
                 obs_keys_logged = True
                 print(
-                    f"[policy-molmo] first obs: state_keys={sorted(state_typed)} "
+                    f"[run-molmo-operator] first obs: state_keys={sorted(state_typed)} "
                     f"top={TOP_CAMERA} side={SIDE_CAMERA} "
                     f"policy_state_dim={state_6.shape[0]}"
                 )
@@ -440,12 +604,12 @@ async def main() -> None:
                 action_vec, replanned = runner.step(
                     top_rgb=top_rgb,
                     side_rgb=side_rgb,
-                    task=task_prompt,
+                    task=current_task,
                     state_6=state_6,
                 )
                 inf_ms = (time.perf_counter() - t_inf) * 1000
             except Exception as e:
-                print(f"[policy-molmo] inference error: {e}")
+                print(f"[run-molmo-operator] inference error: {e}")
                 continue
 
             tick_count += 1
@@ -456,7 +620,7 @@ async def main() -> None:
                 if replan_count > 1:
                     replan_ms_sum += inf_ms
                 print(
-                    f"[policy-molmo] replan #{replan_count}: "
+                    f"[run-molmo-operator] replan #{replan_count}: "
                     f"chunk_size={runner.chunk_size} forward={inf_ms:.0f}ms"
                 )
 
@@ -467,7 +631,7 @@ async def main() -> None:
                     budget_ms = (1000 / fps) * runner.chunk_size
                     marker = "OK" if avg < budget_ms else "OVER"
                     print(
-                        f"[policy-molmo] tick {tick_count:>5}: replan "
+                        f"[run-molmo-operator] tick {tick_count:>5}: replan "
                         f"avg={avg:6.1f}ms (n={steady_n}) "
                         f"chunk_budget={budget_ms:.0f}ms [{marker}]"
                     )
@@ -482,8 +646,12 @@ async def main() -> None:
             )
 
     except KeyboardInterrupt:
-        print("\n[policy-molmo] stopping ...")
+        print("\n[run-molmo-operator] stopping ...")
     finally:
+        if timeout_task is not None and not timeout_task.done():
+            timeout_task.cancel()
+        if done_future is not None and not done_future.done():
+            done_future.set_result({"status": "cancelled"})
         try:
             await op.disconnect()
         finally:

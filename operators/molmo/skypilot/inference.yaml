@@ -1,7 +1,7 @@
 # Inference-side cloud runner for MolmoAct2-SO100_101.
 #
 # Spins up an on-demand H100 box, syncs this repo, and runs
-# `inference.py` as a long-lived job that joins the
+# `molmo_operator.py` as a long-lived job that joins the
 # LiveKit room your robot.py and teleoperator.py are already in.
 # Handoff between human operator and this policy is gated server-side,
 # the teleop window's `c` key cycles the active operator.
@@ -47,7 +47,7 @@ setup: |
   uv sync
 
 envs:
-  # All optional — `inference.py` reads these and falls
+  # All optional — `molmo_operator.py` reads these and falls
   # back to its argparse defaults if unset. Override per-launch with
   # `sky launch ... --env KEY=VAL`.
   MOLMO_MODEL: allenai/MolmoAct2-SO100_101
@@ -59,4 +59,4 @@ envs:
 
 run: |
   cp ~/.leslider-molmo.env .env
-  uv run python inference.py
+  uv run python molmo_operator.py

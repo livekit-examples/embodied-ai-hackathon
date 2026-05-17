@@ -1,0 +1,35 @@
+# Patterns for scripts/deploy_to_robot.sh. Same syntax as .gitignore.
+#
+# What's NOT in here is shipped to the robot. In particular `.env` *is*
+# synced so the robot picks up your LIVEKIT_* / LESLIDER_* config
+# without retype. Put per-machine overrides in `.env.local`; it's
+# excluded below so each machine keeps its own.
+
+# Version control
+.git/
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Operator-side only: dataset recordings and trained checkpoints. The
+# robot host doesn't write data and doesn't run inference, so neither
+# tree belongs there. Multi-GB on a real corpus.
+data/
+checkpoints/
+
+# Training output (policies/<algo>/train.py writes here, but only on a
+# GPU host). Excluded so we don't accidentally pull a remote run home.
+outputs/
+
+# Editor/OS noise
+.vscode/
+.idea/
+.DS_Store
+
+# Per-machine overrides; each machine keeps its own.
+.env.local

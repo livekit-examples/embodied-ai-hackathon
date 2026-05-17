@@ -1,0 +1,17 @@
+[project]
+name = "run-policy-operator"
+version = "0.1.0"
+description = "ACT policy inference operator with a run_policy(policy) RPC that switches between trained checkpoints (pick_up, put_down). Filters obs frames to whatever cameras each policy declares in its input_features."
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "livekit-portal>=0.2.2",
+    "livekit-api>=0.7",
+    "lerobot>=0.5",
+    "numpy>=1.24",
+    "pillow>=10",
+    "python-dotenv>=1",
+    "torch>=2.7,<2.11",
+    "torchvision>=0.22,<0.26",
+]
+
+# Flat script project: `uv run run_policy_operator.py` from this directory.

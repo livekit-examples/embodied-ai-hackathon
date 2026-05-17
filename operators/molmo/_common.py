@@ -1,4 +1,4 @@
-"""Shared helpers for robot.py / teleoperator.py / policies/<algo>/inference.py.
+"""Shared helpers for robot.py / teleoperator.py / molmo_operator.py.
 
 Reads LiveKit API credentials from .env, mints JWTs with low-latency
 playout bounds, and provides a single FPS pacer. Kept tiny on purpose;
