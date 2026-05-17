@@ -1,35 +1,53 @@
-"""Drive the remote leslider with one of N trained ACT checkpoints.
+"""Drive the remote leslider with one of N policies (ACT checkpoints or
+prerecorded scripted playback).
 
-A single Portal Operator that pre-loads multiple ACT policies (by
-default ``pick_up`` and ``put_down``, trained via the
-``utils/data_collection`` pipeline) and exposes an RPC
+A single Portal Operator that pre-loads multiple policies and exposes
+an RPC
 
-    run_policy(policy: "pick_up" | "put_down" | ...)
+    run_policy(policy: "pick_up" | "put_down" | ..., side: "left" | "right")
 
-that:
+Two policy types are supported, registered separately at startup:
 
-  1. Resets the chosen policy's internal action chunk / temporal
-     ensembler (and the sparse-reward "done" counter, if a reward
-     checkpoint is attached to the chosen policy).
-  2. Claims active-operator control of the robot.
-  3. Switches the continuous tick loop to drive that policy.
-  4. Blocks the RPC reply until a "task done" signal fires. Two
-     signal sources are supported, and any policy can use either or
-     both:
-       * a sparse-reward classifier (``utils/train_sparse_reward``)
-         attached to the policy. Fires when ``P(done) >= threshold``
-         for ``trigger_ticks`` consecutive ticks.
-       * a fixed driving duration in seconds. Fires after that many
-         seconds of driving, regardless of the reward signal.
-     A reward classifier, if attached, is the sole terminator for
-     that policy: duration (both explicit and the default fallback)
-     is ignored. Policies without a reward classifier use their
-     explicit ``--duration`` / ``<NAME>_DURATION`` if set, otherwise
-     fall back to ``DEFAULT_DURATION`` (30 s by default,
-     env-overridable; set to 0 to disable and return immediately
-     with ``status: "no_terminator"``). On done, the tick loop
-     parks, the active-operator slot is released, and the RPC
-     returns success.
+  * ACT policies (``--policy NAME=PATH``, env ``<NAME>_CHECKPOINT``):
+    trained via ``utils/data_collection``. Each tick runs an ACT
+    forward pass over the latest camera obs and 7-d state.
+  * Scripted policies (``--script NAME=PATH``, env ``<NAME>_SCRIPT``):
+    play back a randomly-selected episode's recorded action sequence
+    from a LeRobot v3 dataset directory. No model, no cameras read.
+    Used for motions like ``put_down`` where a learned policy is
+    overkill.
+
+The RPC:
+
+  1. Parses ``policy`` and (optional) ``side`` from the payload. The
+     payload may be a bare policy-name string (side defaults to
+     ``right``) or a JSON object ``{"policy": "...", "side": "..."}``.
+  2. Resets the chosen policy. For scripted policies this picks a
+     fresh random episode and records its length as a per-run
+     duration; for ACT policies this clears the internal action
+     chunk / temporal ensembler and the sparse-reward "done" counter.
+  3. Claims active-operator control of the robot.
+  4. Switches the continuous tick loop to drive that policy.
+  5. Blocks the RPC reply until a "task done" signal fires:
+       * scripted: when playback exhausts the random episode, or
+         the per-run duration watchdog (episode length + 2 s safety
+         buffer) fires, whichever comes first.
+       * ACT: a sparse-reward classifier
+         (``utils/train_sparse_reward``) reaching
+         ``P(done) >= threshold`` for ``trigger_ticks`` consecutive
+         ticks, and/or a fixed ``--duration`` / ``<NAME>_DURATION``
+         seconds. If neither is configured, falls back to
+         ``DEFAULT_DURATION`` (30 s by default, env-overridable; set
+         to 0 to disable and return immediately with
+         ``status: "no_terminator"``).
+     On done, the tick loop parks, the active-operator slot is
+     released, and the RPC returns success.
+
+The ``side`` parameter only affects scripted policies. When
+``side == "left"``, the first joint (shoulder_pan, index 0 of the
+7-d action) is sign-flipped to mirror a recording captured on the
+right side. ACT policies ignore ``side``; passing ``side="left"`` to
+an ACT policy is a no-op with a warning log.
 
 The robot side runs the shared ``portal.yaml`` at the repo root, which
 publishes *two* cameras (``arm_camera`` + ``overhead_camera``). The ACT
@@ -57,12 +75,15 @@ import asyncio
 import json
 import logging
 import os
+import random
 import sys
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 
 import numpy as np
+import pyarrow as pa
+import pyarrow.parquet as pq
 import torch
 from lerobot.policies.act.modeling_act import ACTPolicy, ACTTemporalEnsembler
 from lerobot.processor.converters import (
@@ -128,6 +149,16 @@ STATE_KEYS = (
     "slider.vel",
 )
 ACTION_KEYS = STATE_KEYS
+
+# Action-vector index whose sign is flipped when a scripted policy is
+# invoked with side="left". Index 0 = shoulder_pan.pos (the base
+# rotation), which mirrors left-vs-right placement geometrically.
+SCRIPTED_FLIP_INDEX = 0
+# Safety-net buffer added on top of (episode_frames / fps) when arming
+# the per-run duration watchdog for a scripted playback. Natural script
+# end normally fires first; the watchdog only catches pathological
+# tick-loop stalls.
+SCRIPTED_DURATION_BUFFER_S = 2.0
 
 logger = logging.getLogger(__name__)
 
@@ -247,8 +278,114 @@ class LoadedPolicy:
         # classifier; whichever terminator fires first wins.
         self.duration_s = duration_s
 
-    def reset(self) -> None:
+        self.is_scripted = False
+
+    def reset(self, side: str = "right") -> None:
+        del side
         self.policy.reset()
+
+
+def _load_episode_actions(dataset_dir: Path) -> dict[int, np.ndarray]:
+    """Load per-episode action sequences from a LeRobot v3 dataset dir.
+
+    Reads every ``data/chunk-*/file-*.parquet`` under ``dataset_dir`` and
+    groups rows by ``episode_index``. Returns
+    ``{episode_index: (T, 7) float32 ndarray}``.
+
+    Action rows are stored as parquet ``list<float>``; we flatten the
+    whole column in one shot and ``np.split`` on episode boundaries
+    rather than converting each row through Python, which is ~15x
+    faster on the put_down dataset (13k rows, ~70 ms -> ~5 ms)."""
+    data_root = dataset_dir / "data"
+    parquet_paths = sorted(data_root.glob("chunk-*/file-*.parquet"))
+    if not parquet_paths:
+        raise FileNotFoundError(
+            f"no parquet files under {data_root}; expected a LeRobot v3 dataset"
+        )
+    tables = [pq.read_table(p, columns=["episode_index", "action"]) for p in parquet_paths]
+    table = tables[0] if len(tables) == 1 else pa.concat_tables(tables)
+
+    action_col = table["action"].combine_chunks()
+    n_rows = len(action_col)
+    if n_rows == 0:
+        return {}
+    flat = action_col.values.to_numpy(zero_copy_only=False).astype(
+        np.float32, copy=False
+    )
+    width = flat.size // n_rows
+    actions = flat.reshape(n_rows, width)
+
+    ep_idx = table["episode_index"].to_numpy().astype(np.int64, copy=False)
+    # Rows in LeRobot v3 datasets are written in (episode_index, frame_index)
+    # order, so episode runs are contiguous. Split where episode_index
+    # changes; first index of each run gives the key.
+    change = np.flatnonzero(np.diff(ep_idx)) + 1
+    splits = np.split(actions, change)
+    ep_keys = ep_idx[np.r_[0, change]]
+    return {int(e): a for e, a in zip(ep_keys, splits)}
+
+
+class ScriptedPolicy:
+    """Prerecorded-motion "policy" that plays back one randomly-selected
+    episode from a LeRobot v3 dataset per ``reset()``. Exposes the same
+    duck-typed surface (``name``, ``cameras``, ``scorer``, ``reward_camera``,
+    ``duration_s``, ``reset()``) as :class:`LoadedPolicy` so the tick loop
+    and RPC handler can hold either kind in the same dict.
+
+    No model, no inference, no cameras read. The tick loop fast-paths
+    scripted policies via ``is_scripted=True`` and ``next_action()``.
+
+    ``side="left"`` at reset flips the sign of action index
+    ``SCRIPTED_FLIP_INDEX`` (shoulder_pan) on every emitted action so a
+    recording captured on the right side mirrors to the left."""
+
+    def __init__(self, name: str, dataset_dir: Path, fps: int) -> None:
+        self.name = name
+        self.dataset_dir = dataset_dir
+        self.fps = fps
+        self.episodes = _load_episode_actions(dataset_dir)
+        if not self.episodes:
+            raise ValueError(f"scripted dataset {dataset_dir} has no episodes")
+        self.episode_keys = sorted(self.episodes.keys())
+        self.rng = random.Random()
+
+        # Duck-typed surface for the existing tick loop / RPC code.
+        self.cameras: tuple[str, ...] = ()
+        self.scorer = None
+        self.reward_camera = ""
+        self.is_scripted = True
+
+        # Per-run state, (re)assigned by every reset().
+        self.actions: Optional[np.ndarray] = None
+        self.cursor: int = 0
+        self.flip_pan: bool = False
+        self.episode_index: int = -1
+        # duration_s is rearmed per-run from the chosen episode length;
+        # the RPC handler reads it AFTER reset() to set the watchdog.
+        self.duration_s: Optional[float] = None
+
+    def reset(self, side: str = "right") -> None:
+        self.episode_index = self.rng.choice(self.episode_keys)
+        self.actions = self.episodes[self.episode_index]
+        self.cursor = 0
+        self.flip_pan = side == "left"
+        self.duration_s = len(self.actions) / float(self.fps) + SCRIPTED_DURATION_BUFFER_S
+
+    def next_action(self) -> Optional[dict[str, float]]:
+        """Advance the cursor by one and return the next action dict, or
+        ``None`` when the recorded episode is exhausted (signals
+        ``script_end`` to the tick loop)."""
+        if self.actions is None or self.cursor >= len(self.actions):
+            return None
+        a = self.actions[self.cursor]
+        self.cursor += 1
+        if self.flip_pan:
+            a = a.copy()
+            a[SCRIPTED_FLIP_INDEX] = -a[SCRIPTED_FLIP_INDEX]
+        return {k: float(a[i]) for i, k in enumerate(ACTION_KEYS)}
+
+
+AnyPolicy = Union[LoadedPolicy, "ScriptedPolicy"]
 
 
 def _parse_policy_paths(args_pairs: list[str]) -> dict[str, Path]:
@@ -273,6 +410,30 @@ def _parse_policy_paths(args_pairs: list[str]) -> dict[str, Path]:
         ("pick_up", os.environ.get("PICK_UP_CHECKPOINT")),
         ("put_down", os.environ.get("PUT_DOWN_CHECKPOINT")),
     )
+    for name, path in defaults:
+        if path:
+            out[name] = Path(path).expanduser().resolve()
+    return out
+
+
+def _parse_script_paths(args_pairs: list[str]) -> dict[str, Path]:
+    """Parse ``name=path`` pairs into a mapping of scripted-policy dataset
+    directories. Falls back to env var ``PUT_DOWN_SCRIPT`` when no CLI
+    pairs are given. Each path must be a LeRobot v3 dataset directory
+    (i.e. contains ``data/chunk-*/file-*.parquet``)."""
+    out: dict[str, Path] = {}
+    if args_pairs:
+        for p in args_pairs:
+            if "=" not in p:
+                raise SystemExit(f"--script expects name=path, got: {p!r}")
+            name, _, path = p.partition("=")
+            name = name.strip()
+            if not name or not path.strip():
+                raise SystemExit(f"--script expects name=path, got: {p!r}")
+            out[name] = Path(path).expanduser().resolve()
+        return out
+
+    defaults = (("put_down", os.environ.get("PUT_DOWN_SCRIPT")),)
     for name, path in defaults:
         if path:
             out[name] = Path(path).expanduser().resolve()
@@ -370,8 +531,20 @@ async def main() -> None:
         action="append",
         default=[],
         metavar="NAME=PATH",
-        help="Register a named policy checkpoint. Repeatable. "
+        help="Register a named ACT policy checkpoint. Repeatable. "
              "Defaults to PICK_UP_CHECKPOINT / PUT_DOWN_CHECKPOINT env vars.",
+    )
+    parser.add_argument(
+        "--script",
+        action="append",
+        default=[],
+        metavar="NAME=PATH",
+        help="Register a named SCRIPTED policy backed by a prerecorded "
+             "LeRobot v3 dataset directory. The chosen episode is "
+             "randomized per run_policy() call and its length sets that "
+             "run's RPC timeout. Repeatable. Defaults to PUT_DOWN_SCRIPT "
+             "env var. If a name is given to both --policy and --script, "
+             "--script wins.",
     )
     parser.add_argument(
         "--no-temporal-ensemble",
@@ -448,30 +621,65 @@ async def main() -> None:
     load_env()
 
     policy_paths = _parse_policy_paths(args.policy)
-    if not policy_paths:
+    script_paths = _parse_script_paths(args.script)
+
+    # Scripted always wins over ACT for the same name (env or CLI). The
+    # tick loop's behaviour for a name diverges by type, so they cannot
+    # coexist under one name.
+    for name in list(policy_paths.keys()):
+        if name in script_paths:
+            print(
+                f"[run-policy-operator] note: '{name}' registered as both "
+                f"ACT and scripted; using scripted ({script_paths[name]})"
+            )
+            del policy_paths[name]
+
+    if not policy_paths and not script_paths:
         raise SystemExit(
-            "no policies registered; pass --policy name=path or set "
-            "PICK_UP_CHECKPOINT / PUT_DOWN_CHECKPOINT"
+            "no policies registered; pass --policy name=path or "
+            "--script name=path (or set PICK_UP_CHECKPOINT / "
+            "PUT_DOWN_CHECKPOINT / PUT_DOWN_SCRIPT)"
         )
 
+    all_policy_names = set(policy_paths) | set(script_paths)
+
     reward_paths = _parse_reward_paths(args.reward)
-    unknown_reward = sorted(set(reward_paths) - set(policy_paths))
+    unknown_reward = sorted(set(reward_paths) - all_policy_names)
     if unknown_reward:
         raise SystemExit(
             f"--reward names not registered as policies: {unknown_reward} "
-            f"(known: {sorted(policy_paths)})"
+            f"(known: {sorted(all_policy_names)})"
         )
+    # Scripted policies own their own terminator (script end + per-run
+    # duration watchdog); a reward classifier would be redundant and
+    # confusing. Silently drop env-default rewards that target scripted
+    # names so PUT_DOWN_REWARD left over from an earlier ACT setup
+    # doesn't bite.
+    for name in list(reward_paths.keys()):
+        if name in script_paths:
+            print(
+                f"[run-policy-operator] note: reward checkpoint for "
+                f"scripted policy '{name}' ignored"
+            )
+            del reward_paths[name]
     for name, path in reward_paths.items():
         if not path.is_file():
             raise FileNotFoundError(f"reward checkpoint not found: {path}")
 
     durations = _parse_duration_specs(args.duration)
-    unknown_duration = sorted(set(durations) - set(policy_paths))
+    unknown_duration = sorted(set(durations) - all_policy_names)
     if unknown_duration:
         raise SystemExit(
             f"--duration names not registered as policies: {unknown_duration} "
-            f"(known: {sorted(policy_paths)})"
+            f"(known: {sorted(all_policy_names)})"
         )
+    for name in list(durations.keys()):
+        if name in script_paths:
+            print(
+                f"[run-policy-operator] note: --duration for scripted "
+                f"policy '{name}' ignored (uses random episode length)"
+            )
+            del durations[name]
 
     try:
         default_duration_s: Optional[float] = float(
@@ -496,9 +704,13 @@ async def main() -> None:
     for name, path in policy_paths.items():
         if not path.is_dir():
             raise FileNotFoundError(f"checkpoint directory not found: {path}")
-        print(f"[run-policy-operator]   policy '{name}' <- {path}")
+        print(f"[run-policy-operator]   policy '{name}' (ACT) <- {path}")
+    for name, path in script_paths.items():
+        if not path.is_dir():
+            raise FileNotFoundError(f"scripted dataset directory not found: {path}")
+        print(f"[run-policy-operator]   policy '{name}' (scripted) <- {path}")
 
-    policies: dict[str, LoadedPolicy] = {}
+    policies: dict[str, AnyPolicy] = {}
     for name, path in policy_paths.items():
         reward_path = reward_paths.get(name)
         if reward_path is not None:
@@ -511,8 +723,8 @@ async def main() -> None:
         if duration_s is not None:
             extras.append(f"+duration {duration_s}s")
         suffix = (" (" + ", ".join(extras) + ")") if extras else ""
-        print(f"[run-policy-operator] loading '{name}' ...{suffix}")
-        policies[name] = LoadedPolicy(
+        print(f"[run-policy-operator] loading '{name}' (ACT) ...{suffix}")
+        loaded = LoadedPolicy(
             name=name,
             checkpoint_dir=path,
             device=device,
@@ -522,16 +734,29 @@ async def main() -> None:
             reward_camera=args.reward_camera,
             duration_s=duration_s,
         )
-        scorer_tag = (
-            f"reward={'on' if policies[name].scorer is not None else 'off'}"
-        )
+        policies[name] = loaded
+        scorer_tag = f"reward={'on' if loaded.scorer is not None else 'off'}"
         duration_tag = (
             f"duration={duration_s}s" if duration_s is not None else "duration=off"
         )
         print(
-            f"[run-policy-operator]   '{name}' cameras={policies[name].cameras} "
-            f"chunk={policies[name].policy.config.chunk_size} "
+            f"[run-policy-operator]   '{name}' cameras={loaded.cameras} "
+            f"chunk={loaded.policy.config.chunk_size} "
             f"{scorer_tag} {duration_tag}"
+        )
+
+    for name, path in script_paths.items():
+        print(f"[run-policy-operator] loading '{name}' (scripted) ...")
+        scripted = ScriptedPolicy(name=name, dataset_dir=path, fps=fps)
+        policies[name] = scripted
+        ep_lens = {ep: len(scripted.episodes[ep]) for ep in scripted.episode_keys}
+        min_f = min(ep_lens.values())
+        max_f = max(ep_lens.values())
+        print(
+            f"[run-policy-operator]   '{name}' episodes={len(scripted.episode_keys)} "
+            f"frames={min_f}-{max_f} "
+            f"duration={min_f / fps:.1f}-{max_f / fps:.1f}s "
+            f"(+{SCRIPTED_DURATION_BUFFER_S:.0f}s watchdog buffer)"
         )
 
     cfg = OperatorConfig.from_yaml_file(CONFIG_PATH, room)
@@ -551,7 +776,16 @@ async def main() -> None:
     # Currently-selected policy, or None to park. Single writer (the RPC
     # handler / tick loop / timeout task all run on the asyncio loop),
     # so no lock needed on CPython.
-    current: Optional[LoadedPolicy] = None
+    current: Optional[AnyPolicy] = None
+    # Serializes active-operator transitions between _park's release
+    # (set_active_operator(None)) and a fresh run_policy()'s claim
+    # (set_active_operator(me_id)). Without this, if a watchdog or
+    # script_end fires at the same moment a caller re-invokes
+    # run_policy, the two Portal calls race and the slot can end up
+    # cleared right after we claimed it. The check inside _park's lock
+    # acquire (`if current is None`) lets us skip the release entirely
+    # when a new RPC has already taken over.
+    op_lock = asyncio.Lock()
     # When a run_policy() RPC engages a policy that has at least one
     # terminator (reward classifier and/or fixed duration), we hand it
     # an asyncio.Future that resolves once a terminator fires. The
@@ -594,10 +828,17 @@ async def main() -> None:
         timeout_task = None
         if not fut.done():
             fut.set_result(result)
-        try:
-            await op.set_active_operator(None)
-        except Exception as e:
-            print(f"[run-policy-operator] release active-operator failed: {e}")
+        async with op_lock:
+            if current is not None:
+                # A new run_policy() RPC raced ahead and claimed the
+                # slot while we were waiting on the lock. Let it own
+                # the active-operator state; releasing now would
+                # immediately unclaim what was just claimed.
+                return
+            try:
+                await op.set_active_operator(None)
+            except Exception as e:
+                print(f"[run-policy-operator] release active-operator failed: {e}")
 
     async def _duration_watchdog(
         seconds: float, policy_name: str, target_future: asyncio.Future
@@ -629,9 +870,10 @@ async def main() -> None:
         )
         payload = (data.payload or "").strip()
         name = payload
+        side_raw: Optional[str] = None
         if payload.startswith("{"):
             try:
-                name = str(json.loads(payload).get("policy", "")).strip()
+                obj = json.loads(payload)
             except json.JSONDecodeError:
                 raise RpcError.Error(
                     code=1400,
@@ -639,6 +881,20 @@ async def main() -> None:
                             "name string instead",
                     data=None,
                 )
+            # `or ""` so `{"policy": null}` collapses to "" and hits
+            # the empty-name branch instead of `str(None) == "None"`
+            # and a confusing 1404.
+            name = str(obj.get("policy") or "").strip()
+            raw = obj.get("side")
+            if raw is not None:
+                side_raw = str(raw).strip().lower()
+        side = side_raw if side_raw else "right"
+        if side not in ("left", "right"):
+            raise RpcError.Error(
+                code=1400,
+                message=f"invalid side {side!r}; expected 'left' or 'right'",
+                data=None,
+            )
         if not name:
             raise RpcError.Error(
                 code=1400,
@@ -653,15 +909,29 @@ async def main() -> None:
             )
 
         chosen = policies[name]
-        chosen.reset()
+        if side == "left" and not getattr(chosen, "is_scripted", False):
+            print(
+                f"[run-policy-operator] warning: side='left' has no effect on "
+                f"non-scripted policy '{name}'"
+            )
 
-        # Preempt any in-flight run_policy() so its caller gets a clean
-        # reply rather than hanging on a future we're about to drop.
+        # Preempt any in-flight run_policy() BEFORE mutating chosen's
+        # state, so the old run's caller gets a clean "preempted" reply
+        # and its watchdog is cancelled before we reset the policy.
+        # Doing this in the other order works today only because no
+        # await sits between reset() and the preempt block; any future
+        # refactor that adds one would let the tick loop observe a
+        # half-reset policy.
         if done_future is not None and not done_future.done():
             done_future.set_result({"status": "preempted", "by": name})
         if timeout_task is not None and not timeout_task.done():
             timeout_task.cancel()
         timeout_task = None
+
+        # reset() must run AFTER preempt (see above) but BEFORE the
+        # has_terminator check, since ScriptedPolicy.reset is what
+        # arms chosen.duration_s for this run.
+        chosen.reset(side=side)
 
         has_terminator = chosen.scorer is not None or chosen.duration_s is not None
         new_future: Optional[asyncio.Future] = None
@@ -678,24 +948,38 @@ async def main() -> None:
             )
 
         me_id = op.local_identity()
-        await op.set_active_operator(me_id)
+        async with op_lock:
+            await op.set_active_operator(me_id)
+        scripted_tag = ""
+        if getattr(chosen, "is_scripted", False):
+            scripted_tag = (
+                f" episode={chosen.episode_index} "
+                f"frames={len(chosen.actions)} "
+                f"side={side}"
+            )
         print(
-            f"[run-policy-operator] run_policy('{name}') -> "
+            f"[run-policy-operator] run_policy('{name}', side={side}) -> "
             f"active operator -> {me_id} cameras={chosen.cameras} "
             f"reward={'on' if chosen.scorer is not None else 'off'} "
             f"duration={chosen.duration_s if chosen.duration_s is not None else 'off'}"
+            f"{scripted_tag}"
         )
+
+        base_response: dict = {
+            "policy": name,
+            "side": side,
+            "cameras": list(chosen.cameras),
+            "active_operator": me_id,
+        }
+        if getattr(chosen, "is_scripted", False):
+            base_response["episode_index"] = int(chosen.episode_index)
+            base_response["frames"] = int(len(chosen.actions))
 
         if new_future is None:
             # No terminators attached; preserve the pre-terminator
             # behaviour and return immediately, flagging that the
             # caller is on its own for completion detection.
-            response = json.dumps({
-                "policy": name,
-                "cameras": list(chosen.cameras),
-                "active_operator": me_id,
-                "status": "no_terminator",
-            })
+            response = json.dumps({**base_response, "status": "no_terminator"})
             print(
                 f"[run-policy-operator] RPC run_policy('{name}') -> "
                 f"returning to {caller!r}: {response}"
@@ -711,12 +995,7 @@ async def main() -> None:
                 await _park({"status": "cancelled"})
             raise
 
-        response = json.dumps({
-            "policy": name,
-            "cameras": list(chosen.cameras),
-            "active_operator": me_id,
-            **result,
-        })
+        response = json.dumps({**base_response, **result})
         print(
             f"[run-policy-operator] RPC run_policy('{name}') -> "
             f"returning to {caller!r}: {response}"
@@ -753,8 +1032,8 @@ async def main() -> None:
                         f"{empty_obs_count // 30}s, is robot.py running and "
                         "connected to the same room?"
                     )
-                continue
-            empty_obs_count = 0
+            else:
+                empty_obs_count = 0
 
             active = current
             if active is None:
@@ -768,6 +1047,38 @@ async def main() -> None:
                     f"[run-policy-operator] driving with '{active.name}' "
                     f"cameras={active.cameras}"
                 )
+
+            if active.is_scripted:
+                # Scripted playback doesn't read obs.state or obs.frames,
+                # so we don't gate on obs being present. If the robot is
+                # alive but its camera is hung, scripted runs still
+                # advance. in_reply_to_ts_us falls back to 0 (= "no
+                # preceding observation") when there's no obs yet.
+                action_dict = active.next_action()
+                if action_dict is None:
+                    print(
+                        f"[run-policy-operator] done: '{active.name}' "
+                        f"script_end episode={active.episode_index} "
+                        f"frames={active.cursor}; parking"
+                    )
+                    await _park({
+                        "status": "done",
+                        "reason": "script_end",
+                        "episode_index": int(active.episode_index),
+                        "frames": int(active.cursor),
+                    })
+                    continue
+                op.send_action(
+                    action_dict,
+                    timestamp_us=int(time.time() * 1_000_000),
+                    in_reply_to_ts_us=obs.timestamp_us if obs is not None else 0,
+                )
+                tick_count += 1
+                continue
+
+            # ACT path needs obs (state + camera frames).
+            if obs is None:
+                continue
 
             state_typed = dict(obs.state)
             frames: dict[str, np.ndarray] = {}
