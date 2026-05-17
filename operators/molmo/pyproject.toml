@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Standalone MolmoAct2-SO100_101 inference operator for the leslider robot over livekit-portal."
 requires-python = ">=3.12,<3.13"
 dependencies = [
-    "livekit-portal>=0.2.1",
+    "livekit-portal>=0.2.2",
     "livekit-api>=0.7",
     "numpy>=2.0,<2.3",
     "python-dotenv>=1",

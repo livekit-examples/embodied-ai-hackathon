@@ -673,15 +673,15 @@ wheels = [
 
 [[package]]
 name = "livekit-portal"
-version = "0.2.1"
+version = "0.2.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "numpy" },
 ]
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/ab/a2/713359c51fcea4986274d640992b824e46b2a11dfec60b234b242578c431/livekit_portal-0.2.1-cp312-cp312-macosx_15_0_arm64.whl", hash = "sha256:f290afe2c883fa952111b823e60d3a9f8380d230d3ae5e229e54a88f4508e84c", size = 11996071, upload-time = "2026-05-08T15:08:15.403Z" },
-    { url = "https://files.pythonhosted.org/packages/51/5e/e9b522e9303ed9c6de2ee0e5b23f8f5c509b263d3be3e3a9b498140b1d38/livekit_portal-0.2.1-cp312-cp312-manylinux_2_35_x86_64.whl", hash = "sha256:af91de6d2dec8d8b2905b578e3904db9ac1ae5dd80ec04c26756a7351d7c9f4e", size = 14621442, upload-time = "2026-05-08T15:08:17.918Z" },
-    { url = "https://files.pythonhosted.org/packages/14/26/ba3a51281b704f1aa95b7ccf2cd5806650be37ceac888ad91057c9abe3d7/livekit_portal-0.2.1-cp312-cp312-manylinux_2_39_aarch64.whl", hash = "sha256:d5fdef9c71ee3de29a388d85238a5c713101b6d2f163b82f33e3bead0e1542d9", size = 13609977, upload-time = "2026-05-08T15:08:20.597Z" },
+    { url = "https://files.pythonhosted.org/packages/ba/9c/bf05bb310332b767c771c67dfb2aa49367cd166a24c912832e765e507144/livekit_portal-0.2.2-cp312-cp312-macosx_15_0_arm64.whl", hash = "sha256:e0b4dbd1fe88b48cf380f5af64dd981ce1051058b766e4c7a679cf41c7d06237", size = 12367901, upload-time = "2026-05-17T01:35:02.55Z" },
+    { url = "https://files.pythonhosted.org/packages/99/ee/b98e3760690ec1e0ea73d471ebb28eab4f7d2c96b68f9fe2aa4dc2311fd5/livekit_portal-0.2.2-cp312-cp312-manylinux_2_35_x86_64.whl", hash = "sha256:c9346a08d3b83411dc0e513e61165cd813ff0860a245749c39102a9ce554f528", size = 15065101, upload-time = "2026-05-17T01:35:05.625Z" },
+    { url = "https://files.pythonhosted.org/packages/80/9a/09644c6d1775f29e31a2d8f183aa53fdfc547742ace2b1255d750ac0ce48/livekit_portal-0.2.2-cp312-cp312-manylinux_2_39_aarch64.whl", hash = "sha256:ec746f88643307e7d2078c317157e657ecd8b670cf2bbe8e223fcc8e91f4df99", size = 14010210, upload-time = "2026-05-17T01:35:08.688Z" },
 ]
 
 [[package]]
@@ -1099,7 +1099,7 @@ requires-dist = [
     { name = "lerobot-robot-so101-slider", git = "https://github.com/pham-tuan-binh/leslider?subdirectory=packages%2Flerobot_robot_so101_slider" },
     { name = "lerobot-teleoperator-so101-with-slider", git = "https://github.com/pham-tuan-binh/leslider?subdirectory=packages%2Flerobot_teleoperator_so101_with_slider" },
     { name = "livekit-api", specifier = ">=0.7" },
-    { name = "livekit-portal", specifier = ">=0.2.1" },
+    { name = "livekit-portal", specifier = ">=0.2.2" },
     { name = "numpy", specifier = ">=1.24" },
     { name = "opencv-python", specifier = ">=4.5" },
     { name = "pynput", specifier = ">=1.7" },
