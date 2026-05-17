@@ -217,7 +217,7 @@ RESET_POSE_DEFAULTS: dict[str, float] = {
     "elbow_flex.pos":    90.73,
     "wrist_flex.pos":    73.01,
     "wrist_roll.pos":     0.04,
-    "gripper.pos":       0.69,
+    "gripper.pos":       10,
 }
 
 logger = logging.getLogger(__name__)
@@ -343,7 +343,7 @@ async def main() -> None:
     # RESET_POSE_* overrides; the rest are loop-shape parameters.
     reset_pose_target = _build_reset_pose_target()
     reset_max_step = float(env_str("RESET_POSE_MAX_STEP", "2.0"))
-    reset_tolerance = float(env_str("RESET_POSE_TOLERANCE", "2.0"))
+    reset_tolerance = float(env_str("RESET_POSE_TOLERANCE", "5.0"))
     reset_timeout_s = env_int("RESET_POSE_TIMEOUT_S", 10)
 
     cfg = OperatorConfig.from_yaml_file(CONFIG_PATH, room)
