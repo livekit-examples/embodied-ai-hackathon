@@ -2,6 +2,8 @@
 
 [![Watch the demo](https://img.youtube.com/vi/6K4rvcU73uY/maxresdefault.jpg)](https://youtu.be/6K4rvcU73uY)
 
+**Demo video can be found here: https://youtu.be/6K4rvcU73uY**
+
 We built a system of robots for assisting you on your desktop. You can do tasks such as desk cleaning or organization just by talking to a voice agent.
 
 For example, you can tell the robot to "put the screwdriver away" and it would pick up the screwdriver on one end of the table and put it to the bin at the other end of the table.
