@@ -234,12 +234,12 @@ async def _execute_move_to(step: MoveTo, local_participant) -> None:
 
 
 async def _send_to_reset_pose(ctx: AsyncRunContext) -> None:
-    """Move the robot to its reset pose before plan execution.
+    """Move the robot to its reset pose.
 
-    Not a planner action — a hardcoded prelude invoked at the start of every
-    `plan_and_execute` call. Pulls the room from `ctx` itself and no-ops when
-    none is available (e.g. `agent.py console`), mirroring the convention used
-    by `execute_plan` / `plan_progress`.
+    Not a planner action — exposed only via the `reset_pose` function tool.
+    Pulls the room from `ctx` itself and no-ops when none is available (e.g.
+    `agent.py console`), mirroring the convention used by `execute_plan` /
+    `plan_progress`.
     """
     try:
         room = ctx.session.room_io.room
@@ -256,9 +256,33 @@ async def _send_to_reset_pose(ctx: AsyncRunContext) -> None:
             response_timeout=_OPERATOR_RPC_TIMEOUT_S,
         )
     except RpcError as e:
-        # Same failure mode as the other operator RPCs: log and continue so the
-        # plan can still run if the move-to operator isn't connected.
+        # Same failure mode as the other operator RPCs: log and continue if
+        # the move-to operator isn't connected.
         logger.warning("reset_pose RPC failed: %s", e)
+
+
+async def _send_release_gripper(ctx: AsyncRunContext) -> None:
+    """Manually release the robot's gripper.
+
+    Not a planner action — exposed only via the `release_gripper` function
+    tool. Same room-availability convention as `_send_to_reset_pose`.
+    """
+    try:
+        room = ctx.session.room_io.room
+    except RuntimeError:
+        room = None
+    if room is None:
+        logger.warning("No room available; skipping release_gripper RPC")
+        return
+    try:
+        await room.local_participant.perform_rpc(
+            destination_identity=OPERATOR_MOVE_TO_IDENTITY,
+            method="release_gripper",
+            payload="",
+            response_timeout=_OPERATOR_RPC_TIMEOUT_S,
+        )
+    except RpcError as e:
+        logger.warning("release_gripper RPC failed: %s", e)
 
 
 async def _execute_step(step: Action, room) -> None:
@@ -530,6 +554,21 @@ class PlannerToolset(AsyncToolset):
         await _send_to_reset_pose(ctx)
         return "Robot is at reset."
 
+    @function_tool()
+    async def release_gripper(self, ctx: AsyncRunContext) -> str:
+        """Manually open / release the robot's gripper.
+
+        Use when the user explicitly asks the robot to release, open the
+        gripper, drop / let go of what it is holding, or similar. Do NOT
+        call this as part of a pick-up or put-away request — those are
+        handled by `plan_and_execute`.
+        """
+        ctx.disallow_interruptions()
+        logger.info("User-invoked release_gripper")
+        await ctx.update("Releasing the gripper")
+        await _send_release_gripper(ctx)
+        return "Gripper released."
+
 
 class Orchestrator(Agent):
     def __init__(self, camera: WorkbenchCamera) -> None:
@@ -556,6 +595,9 @@ class Orchestrator(Agent):
 
                 If the user explicitly asks the robot to reset, park, go home, return to its starting
                 position, or get out of the way, call the `reset_pose` tool.
+
+                If the user explicitly asks the robot to release / open the gripper or drop / let go of
+                what it is holding, call the `release_gripper` tool.
                 """
             ),
             tools=[PlannerToolset(planner_llm, camera)],
