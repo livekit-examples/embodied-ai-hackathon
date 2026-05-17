@@ -319,8 +319,8 @@ async def main() -> None:
     # Values were lifted from the prior X-axis tuning — retune for
     # the new camera orientation if the slider hits the rail before
     # the loop catches it.
-    tag_min = 95
-    tag_max = 297
+    tag_min = 90
+    tag_max = 287
     raw_tag_id = os.environ.get("SLIDER_APRILTAG_ID", "").strip()
     want_tag_id: Optional[int] = int(raw_tag_id) if raw_tag_id else None
 
