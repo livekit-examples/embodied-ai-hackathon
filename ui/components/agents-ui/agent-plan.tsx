@@ -1,16 +1,16 @@
 'use client';
 
 import { memo, useEffect, useMemo, useRef } from 'react';
-import { useTextStream } from '@livekit/components-react';
 import { AnimatePresence, motion } from 'motion/react';
 import scrollIntoView from 'smooth-scroll-into-view-if-needed';
+import { useTextStream } from '@livekit/components-react';
 import { Fade } from '@/components/agents-ui/blocks/agent-session-view-01/components/agent-session-block';
 import { cn } from '@/lib/shadcn/utils';
 
 const PLAN_TOPIC = 'agent.plan';
 
-export type StepStatus = 'pending' | 'in_progress' | 'completed';
-export type PlanPhase = 'idle' | 'planning' | 'executing' | 'completed';
+export type StepStatus = 'pending' | 'in_progress' | 'completed' | 'error';
+export type PlanPhase = 'idle' | 'planning' | 'executing' | 'completed' | 'error';
 
 export interface PlanStep {
   description: string;
@@ -53,6 +53,7 @@ const STATUS_LABEL: Record<StepStatus, string> = {
   pending: 'pending',
   in_progress: 'in progress',
   completed: 'done',
+  error: 'failed',
 };
 
 /**
@@ -64,7 +65,7 @@ export function AgentPlanView({ className }: { className?: string }) {
   const { phase, task, steps } = useAgentPlan();
   if (phase === 'idle') return null;
 
-  const showList = phase === 'executing' || phase === 'completed';
+  const showList = phase === 'executing' || phase === 'completed' || phase === 'error';
 
   return (
     <div className={cn('mx-auto w-full max-w-2xl pb-8 text-xl', className)}>
@@ -89,6 +90,7 @@ export function AgentPlanView({ className }: { className?: string }) {
             transition={{ duration: 0.4, ease: 'easeInOut' }}
           >
             {phase === 'completed' && <p className="font-semibold">Done!</p>}
+            {phase === 'error' && <p className="font-semibold">Failed!</p>}
             <AgentPlanList steps={steps} />
           </motion.div>
         )}
@@ -100,7 +102,7 @@ export function AgentPlanView({ className }: { className?: string }) {
 function AgentPlanList({ steps }: { steps: PlanStep[] }) {
   return (
     <div className="relative">
-      <ol className="h-36 overflow-y-auto [&::-webkit-scrollbar]:hidden [scrollbar-width:none] bg-background rounded-md px-2 py-10 flex flex-col gap-2">
+      <ol className="bg-background flex h-36 flex-col gap-2 overflow-y-auto rounded-md px-2 py-10 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
         {steps.map((step, index) => (
           <AgentPlanItem key={index} index={index + 1} {...step} />
         ))}
@@ -117,6 +119,7 @@ const AgentPlanItem = memo(function AgentPlanItem({
   status,
 }: PlanStep & { index: number }) {
   const isActive = status === 'in_progress';
+  const isError = status === 'error';
   const ref = useRef<HTMLLIElement>(null);
 
   useEffect(() => {
@@ -134,10 +137,10 @@ const AgentPlanItem = memo(function AgentPlanItem({
       ref={ref}
       className={cn(
         'flex items-baseline gap-2 transition-opacity duration-1000 ease-in-out will-change-[opacity]',
-        isActive ? 'opacity-100' : 'opacity-40'
+        isActive || isError ? 'opacity-100' : 'opacity-40'
       )}
     >
-      <span className="font-mono min-w-8 text-right">{`${index}.`}</span>
+      <span className="min-w-8 text-right font-mono">{`${index}.`}</span>
       <span className="flex-1">{description}</span>
       <span className="opacity-20">({STATUS_LABEL[status]})</span>
     </li>

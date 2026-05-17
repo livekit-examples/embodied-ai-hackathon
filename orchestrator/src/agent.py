@@ -286,29 +286,33 @@ async def _send_release_gripper(ctx: AsyncRunContext) -> None:
 
 
 async def _execute_step(step: Action, room) -> None:
-    """Run a single plan step."""
+    """Run a single plan step. Lets `RpcError` propagate to `execute_plan`."""
     logger.info("Executing step: %s", step.model_dump_json())
     if room is None:
         logger.warning("No room available, falling back to stub sleep")
         await asyncio.sleep(_STUB_STEP_DURATION_S)
         return
     local_participant = room.local_participant
-    try:
-        match step:
-            case RunPolicy():
-                await _execute_run_policy(step, local_participant)
-            case MoveTo():
-                await _execute_move_to(step, local_participant)
-    except RpcError as e:
-        # This will occur if the operator participant isn't connected.
-        logger.warning("RPC failed for step %s: %s", step.kind, e)
+    match step:
+        case RunPolicy():
+            await _execute_run_policy(step, local_participant)
+        case MoveTo():
+            await _execute_move_to(step, local_participant)
 
 
-async def execute_plan(ctx: AsyncRunContext, plan: Plan, pub: "PlanProgress") -> None:
-    """Run each step of `plan` in sequence, flipping per-step status and narrating aloud.
+async def execute_plan(
+    ctx: AsyncRunContext, plan: Plan, pub: "PlanProgress"
+) -> str | None:
+    """Run each step of `plan` in sequence, flipping per-step status as it goes.
 
     On success, the publisher is left in `phase: "completed"` so the UI can
-    keep the finished list visible until the next plan replaces it.
+    keep the finished list visible until the next plan replaces it, and `None`
+    is returned. On first `RpcError` the failing step is marked `error`, the
+    plan phase flips to `error`, remaining steps stay `pending`, and a
+    human-readable error string is returned for the caller to relay to the
+    LLM. Caught here (not in `plan_and_execute`) so the error never escapes
+    `plan_progress(ctx)`'s `BaseException` handler, which would clear the
+    snapshot and erase the error state from the UI.
     """
     # `session.room_io` raises RuntimeError when running without a room (e.g.
     # `agent.py console`); the executors handle a None room gracefully.
@@ -318,9 +322,20 @@ async def execute_plan(ctx: AsyncRunContext, plan: Plan, pub: "PlanProgress") ->
         room = None
     for i, step in enumerate(plan.steps):
         await pub.set_step_status(i, "in_progress")
-        await _execute_step(step, room)
+        try:
+            await _execute_step(step, room)
+        except RpcError as e:
+            label = _describe_step(step)
+            logger.warning("RPC failed for step %d (%s): %s", i, step.kind, e)
+            await pub.set_step_status(i, "error")
+            await pub.set_error()
+            return (
+                f"Step {i + 1} '{label}' failed: {e}. "
+                "Remaining steps were not executed."
+            )
         await pub.set_step_status(i, "completed")
     await pub.set_completed()
+    return None
 
 
 # The planner runs in OpenAI strict structured-output mode against the `Plan`
@@ -386,8 +401,8 @@ _PLANNER_USER_PROMPT_HEADER = textwrap.dedent(
 # Topic for the plan-progress text stream consumed by the frontend.
 _PLAN_TOPIC = "agent.plan"
 
-StepStatus = Literal["pending", "in_progress", "completed"]
-PlanPhase = Literal["idle", "planning", "executing", "completed"]
+StepStatus = Literal["pending", "in_progress", "completed", "error"]
+PlanPhase = Literal["idle", "planning", "executing", "completed", "error"]
 
 
 class PlanProgress:
@@ -430,6 +445,12 @@ class PlanProgress:
 
     async def set_completed(self) -> None:
         self._phase = "completed"
+        await self._publish()
+
+    async def set_error(self) -> None:
+        # Only the status is exposed to the UI; the error message itself is
+        # handed back to the LLM via the tool return value and logged.
+        self._phase = "error"
         await self._publish()
 
     async def clear(self) -> None:
@@ -533,8 +554,10 @@ class PlannerToolset(AsyncToolset):
             )
 
             await pub.set_plan([_describe_step(s) for s in plan.steps])
-            await execute_plan(ctx, plan, pub)
+            error = await execute_plan(ctx, plan, pub)
 
+        if error is not None:
+            return f"Error: {error}"
         return f"Completed: {task_description}"
 
     @function_tool()
@@ -589,6 +612,10 @@ class Orchestrator(Agent):
 
                 Use the `plan_and_execute` tool for any such request. The tool runs in the background and
                 narrates progress aloud as it works (planning, moving, picking up, etc.).
+
+                If `plan_and_execute` returns a string that begins with "Error:", briefly apologize and
+                tell the user which step failed in one short sentence (the message contains the step
+                number and reason). Do not retry automatically.
 
                 If the user explicitly asks the robot to reset, park, go home, return to its starting
                 position, or get out of the way, call the `reset_pose` tool.
