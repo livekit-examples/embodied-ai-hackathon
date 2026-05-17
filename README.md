@@ -33,20 +33,22 @@ Through this project, we showcase how robotics is a systems problem, how humans 
 
 All datasets are `LeRobotDataset` v3.0 captures collected at SPC on the leslider rig (SO-101 follower on a linear slider). `binhpham/spc-pick-stuff` is the merged corpus used to train the `pick_up` ACT policy and the sparse-reward classifier.
 
-| Dataset | Object | Task | Episodes | Prompt | Visualize |
-| --- | --- | --- | --- | --- | --- |
-| [`binhpham/spc-pick-granola-bar`](https://huggingface.co/datasets/binhpham/spc-pick-granola-bar) | granola | pick | 50 | "pick up the granola bar and hold it" | [view](https://huggingface.co/spaces/lerobot/visualize_dataset?path=%2Fbinhpham%2Fspc-pick-granola-bar%2Fepisode_0%3Ft%3D9) |
-| [`binhpham/spc-pick-sharpie`](https://huggingface.co/datasets/binhpham/spc-pick-sharpie) | sharpie | pick | 50 | "pick up the sharpie and hold it" | [view](https://huggingface.co/spaces/lerobot/visualize_dataset?path=%2Fbinhpham%2Fspc-pick-sharpie%2Fepisode_0) |
-| [`binhpham/spc-pick-screwdriver`](https://huggingface.co/datasets/binhpham/spc-pick-screwdriver) | screwdriver | pick | 50 | "pick up the screwdriver and hold it" | [view](https://huggingface.co/spaces/lerobot/visualize_dataset?path=%2Fbinhpham%2Fspc-pick-screwdriver%2Fepisode_0) |
-| [`binhpham/spc-pick-stuff`](https://huggingface.co/datasets/binhpham/spc-pick-stuff) | all | pick | 150 | | [view](https://huggingface.co/spaces/lerobot/visualize_dataset) |
-| [`binhpham/spc-mock-put-down`](https://huggingface.co/datasets/binhpham/spc-mock-put-down) | nothing | put | 50 | "mock put down" | [view](https://huggingface.co/spaces/lerobot/visualize_dataset?path=%2Fbinhpham%2Fspc-mock-put-down%2Fepisode_0) |
-| [`j1823/spc-pick-up-scissors`](https://huggingface.co/datasets/j1823/spc-pick-up-scissors) | scissors | pick | 50 | "pick up scissors" | [view](https://huggingface.co/spaces/lerobot/visualize_dataset?path=%2Fj1823%2Fspc-pick-up-scissors%2Fepisode_0) |
+| Dataset                                                                                          | Object      | Task | Episodes | Prompt                                | Visualize                                                                                                                   |
+| ------------------------------------------------------------------------------------------------ | ----------- | ---- | -------- | ------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| [`binhpham/spc-pick-granola-bar`](https://huggingface.co/datasets/binhpham/spc-pick-granola-bar) | granola     | pick | 50       | "pick up the granola bar and hold it" | [view](https://huggingface.co/spaces/lerobot/visualize_dataset?path=%2Fbinhpham%2Fspc-pick-granola-bar%2Fepisode_0%3Ft%3D9) |
+| [`binhpham/spc-pick-sharpie`](https://huggingface.co/datasets/binhpham/spc-pick-sharpie)         | sharpie     | pick | 50       | "pick up the sharpie and hold it"     | [view](https://huggingface.co/spaces/lerobot/visualize_dataset?path=%2Fbinhpham%2Fspc-pick-sharpie%2Fepisode_0)             |
+| [`binhpham/spc-pick-screwdriver`](https://huggingface.co/datasets/binhpham/spc-pick-screwdriver) | screwdriver | pick | 50       | "pick up the screwdriver and hold it" | [view](https://huggingface.co/spaces/lerobot/visualize_dataset?path=%2Fbinhpham%2Fspc-pick-screwdriver%2Fepisode_0)         |
+| [`binhpham/spc-pick-stuff`](https://huggingface.co/datasets/binhpham/spc-pick-stuff)             | all         | pick | 150      |                                       | [view](https://huggingface.co/spaces/lerobot/visualize_dataset)                                                             |
+| [`binhpham/spc-mock-put-down`](https://huggingface.co/datasets/binhpham/spc-mock-put-down)       | nothing     | put  | 50       | "mock put down"                       | [view](https://huggingface.co/spaces/lerobot/visualize_dataset?path=%2Fbinhpham%2Fspc-mock-put-down%2Fepisode_0)            |
+| [`j1823/spc-pick-up-scissors`](https://huggingface.co/datasets/j1823/spc-pick-up-scissors)       | scissors    | pick | 50       | "pick up scissors"                    | [view](https://huggingface.co/spaces/lerobot/visualize_dataset?path=%2Fj1823%2Fspc-pick-up-scissors%2Fepisode_0)            |
 
 ## Priors
 
-- **LiveKit Agents**: our flagship voice agent orchestration platform.
-- **LiveKit Portal**: our SDK for teleoperation and data collection on any robot. The backbone of this project. It lets operators and policies run on different computers in the same network without running into configuration or hardware hassle, and it makes data collection on a complex multi-machine system painless.
-- **LeSlider**: a simple hardware extension to the SO-101 that we designed for fun and for desktop use cases like this.
+We built the below components before the hackathon:
+
+- **[LiveKit Agents](https://github.com/livekit/agents)**: our flagship voice agent orchestration platform.
+- **[LiveKit Portal](https://github.com/livekit/livekit-portal)**: our SDK for teleoperation and data collection on any robot. The backbone of this project. It lets operators and policies run on different computers in the same network without running into configuration or hardware hassle, and it makes data collection on a complex multi-machine system painless.
+- **[LeSlider](https://github.com/pham-tuan-binh/leslider)**: a simple hardware extension to the SO-101 that we designed for fun and for desktop use cases like this.
 
 ## Structure
 
