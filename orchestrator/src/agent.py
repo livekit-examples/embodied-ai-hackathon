@@ -358,10 +358,10 @@ class Orchestrator(Agent):
         # Dedicated planner LLM used inside the planner toolset for
         # vision-based reasoning, kept separate from the voice pipeline LLM
         # to avoid mixing concerns.
-        planner_llm = inference.LLM(model="openai/gpt-5.5")
+        planner_llm = inference.LLM(model="openai/gpt-5.2-chat-latest")
 
         super().__init__(
-            llm=inference.LLM(model="openai/gpt-5.5"),
+            llm=inference.LLM(model="openai/gpt-5.2-chat-latest"),
             instructions=textwrap.dedent(
                 """\
                 You are the toolbench helper, an embodied AI agent equipped with two robotic arms on linear sliders.
