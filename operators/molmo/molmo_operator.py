@@ -115,17 +115,18 @@ POLICY_STATE_KEYS = (
 )
 POLICY_ACTION_KEYS = POLICY_STATE_KEYS
 
-# Per-joint additive offsets to bridge the rig's calibration to the
-# SO-100/SO-101 dataset convention the policy was trained in. Applied
-# on policy input (state) and inverted on policy output (action) so the
-# closed loop stays consistent.
-#   policy_input  = rig_state    + offset
-#   rig_action    = policy_action - offset
-# Dial these in by comparing leader prints to chunk[0] prints at the
-# same physical pose; mean should land near the dataset's state mean.
-JOINT_OFFSETS_DEG: dict[str, float] = {
-    "shoulder_lift.pos": 120.0,
-}
+# Per-joint sign + offset to bridge the rig's calibration to the
+# SO-100/SO-101 dataset convention the policy was trained in. These are
+# the canonical LeRobot v3.0 → v2.1 values documented at
+# https://huggingface.co/docs/lerobot/backwardcomp — sign flip on
+# shoulder_lift, +90° on shoulder_lift and elbow_flex.
+# Applied on policy input (state) and inverted on policy output (action)
+# so the closed loop stays consistent:
+#   policy_state = signs * rig_state    + offsets
+#   rig_action   = (policy_action - offsets) * signs
+# Both arrays are aligned with POLICY_STATE_KEYS.
+JOINT_SIGNS = np.array([1.0, -1.0, 1.0, 1.0, 1.0, 1.0], dtype=np.float32)
+JOINT_OFFSETS_DEG = np.array([0.0, 90.0, 90.0, 0.0, 0.0, 0.0], dtype=np.float32)
 
 # Slider passthrough. The MolmoAct2 checkpoint has no notion of the
 # slider; we always emit zero velocity so the base parks under autonomy.
@@ -167,15 +168,13 @@ def _parse_dtype(name: str) -> torch.dtype:
 
 
 def _build_policy_state(state_typed: dict) -> np.ndarray:
-    """Strip the slider field and return a 6-dim float32 numpy state,
-    shifted into the dataset's calibration convention."""
-    return np.array(
-        [
-            float(state_typed[k]) + JOINT_OFFSETS_DEG.get(k, 0.0)
-            for k in POLICY_STATE_KEYS
-        ],
+    """Strip the slider field and return a 6-dim float32 numpy state in
+    the dataset's calibration convention (signs * rig + offsets)."""
+    rig = np.array(
+        [float(state_typed[k]) for k in POLICY_STATE_KEYS],
         dtype=np.float32,
     )
+    return JOINT_SIGNS * rig + JOINT_OFFSETS_DEG
 
 
 def _frame_to_pil(frame: np.ndarray) -> Image.Image:
@@ -189,17 +188,15 @@ def _frame_to_pil(frame: np.ndarray) -> Image.Image:
 
 def _action_dict_from_vec(action_vec) -> dict[str, float]:
     """Build a rig-side 7-dim action dict from a 6-dim policy action,
-    subtracting per-joint offsets (inverse of _build_policy_state) and
+    inverting the frame transform (action - offsets) * signs and
     pinning slider velocity to zero."""
-    a = np.asarray(action_vec, dtype=np.float32).reshape(-1).tolist()
-    if len(a) != len(POLICY_ACTION_KEYS):
+    a = np.asarray(action_vec, dtype=np.float32).reshape(-1)
+    if a.shape[0] != len(POLICY_ACTION_KEYS):
         raise ValueError(
-            f"expected {len(POLICY_ACTION_KEYS)}-dim policy action, got {len(a)}"
+            f"expected {len(POLICY_ACTION_KEYS)}-dim policy action, got {a.shape[0]}"
         )
-    out = {
-        k: float(a[i]) - JOINT_OFFSETS_DEG.get(k, 0.0)
-        for i, k in enumerate(POLICY_ACTION_KEYS)
-    }
+    rig = (a - JOINT_OFFSETS_DEG) * JOINT_SIGNS
+    out = {k: float(rig[i]) for i, k in enumerate(POLICY_ACTION_KEYS)}
     out[SLIDER_KEY] = SLIDER_DEFAULT_VEL
     return out
 
