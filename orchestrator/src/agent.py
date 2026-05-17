@@ -32,12 +32,13 @@ logger = logging.getLogger("agent")
 
 load_dotenv(".env.local")
 
-# Identities of the operator participants to invoke RPCs on.
+# Identities of the operator participants to invoke RPCs on. The move-to
+# operator also serves rest_pose, since rest_pose is just another arm motion.
 OPERATOR_MOVE_TO_IDENTITY = "move-to-operator"
 OPERATOR_RUN_POLICY_IDENTITY = "run-policy-operator"
 
-# Operator RPCs (move_to, run_policy) block on real arm motion which can take
-# tens of seconds; give them plenty of headroom before timing out.
+# Operator RPCs (move_to, run_policy, rest_pose) block on real arm motion which
+# can take tens of seconds; give them plenty of headroom before timing out.
 _OPERATOR_RPC_TIMEOUT_S = 180.0
 
 # Identity of the participant publishing the workbench overhead camera,
@@ -230,6 +231,34 @@ async def _execute_move_to(step: MoveTo, local_participant) -> None:
         payload=step.object_name,
         response_timeout=_OPERATOR_RPC_TIMEOUT_S,
     )
+
+
+async def _send_to_rest_pose(ctx: AsyncRunContext) -> None:
+    """Move the robot to its rest pose before plan execution.
+
+    Not a planner action — a hardcoded prelude invoked at the start of every
+    `plan_and_execute` call. Pulls the room from `ctx` itself and no-ops when
+    none is available (e.g. `agent.py console`), mirroring the convention used
+    by `execute_plan` / `plan_progress`.
+    """
+    try:
+        room = ctx.session.room_io.room
+    except RuntimeError:
+        room = None
+    if room is None:
+        logger.warning("No room available; skipping rest_pose RPC")
+        return
+    try:
+        await room.local_participant.perform_rpc(
+            destination_identity=OPERATOR_MOVE_TO_IDENTITY,
+            method="rest_pose",
+            payload="",
+            response_timeout=_OPERATOR_RPC_TIMEOUT_S,
+        )
+    except RpcError as e:
+        # Same failure mode as the other operator RPCs: log and continue so the
+        # plan can still run if the move-to operator isn't connected.
+        logger.warning("rest_pose RPC failed: %s", e)
 
 
 async def _execute_step(step: Action, room) -> None:
@@ -483,6 +512,8 @@ class PlannerToolset(AsyncToolset):
             )
 
             await pub.set_plan([_describe_step(s) for s in plan.steps])
+            await ctx.update("Getting into position")
+            await _send_to_rest_pose(ctx)
             await execute_plan(ctx, plan, pub)
 
         return f"Completed: {task_description}"
