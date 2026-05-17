@@ -317,7 +317,6 @@ async def execute_plan(ctx: AsyncRunContext, plan: Plan, pub: "PlanProgress") ->
     except RuntimeError:
         room = None
     for i, step in enumerate(plan.steps):
-        label = _describe_step(step)
         await pub.set_step_status(i, "in_progress")
         await _execute_step(step, room)
         await pub.set_step_status(i, "completed")
