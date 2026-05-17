@@ -66,7 +66,14 @@ torch.utils.data.DataLoader.__init__ = _dl_init_tuned
 # Object-storage FUSE mounts (S3 / Nebius) don't support symlinks; lerobot
 # tries to maintain `checkpoints/last -> NNNNNN/` after every save. Catch
 # the resulting OSError and warn instead of crashing.
-import lerobot.utils.train_utils as _train_utils
+#
+# PyPI lerobot exposes this as `lerobot.utils.train_utils`; the allenai
+# `molmoact2-policy` fork keeps it at `lerobot.common.train_utils`. Try
+# both so the same trainer runs against either install.
+try:
+    import lerobot.utils.train_utils as _train_utils
+except ModuleNotFoundError:
+    import lerobot.common.train_utils as _train_utils
 _orig_update_last = _train_utils.update_last_checkpoint
 def _safe_update_last_checkpoint(checkpoint_dir):
     try:
