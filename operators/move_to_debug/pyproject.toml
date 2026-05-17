@@ -1,0 +1,18 @@
+[project]
+name = "move-to-debug-operator"
+version = "0.1.0"
+description = "Read-only sibling of move-to-operator: same room, same RPC name, same perception stack, but never claims active operator and never publishes actions. Prints AprilTag and Moondream detections to console for diagnosing the perception layer."
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "livekit-portal>=0.2.2",
+    "livekit-api>=0.7",
+    "moondream>=0.1",
+    "numpy>=1.24",
+    "opencv-python>=4.5",
+    "pillow>=10",
+    "pupil-apriltags>=1.0.4",
+    "python-dotenv>=1",
+]
+
+# Flat layout: `uv run move_to_debug_operator.py` from this directory. No CLI,
+# no package, no wheel — the script is the example.
