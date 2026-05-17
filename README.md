@@ -72,3 +72,62 @@ A policy with neither `--reward` nor `--duration` returns immediately (`status: 
 | `cancelled` | n/a | operator shut down before any terminator fired. |
 
 Errors come back as `RpcError`: `1400` (bad payload) or `1404` (unknown policy).
+
+### `operators/molmo`
+
+**Identity:** `run-molmo-operator`. Target this when calling the RPC.
+
+Runs `allenai/MolmoAct2-SO100_101` (or any compatible MolmoAct2 checkpoint) as a continuous policy. Forward passes produce 30-step action chunks (~1 s at 30 fps); the wrapper appends `slider.vel = 0.0` so the slider parks while the arm runs autonomously. Best on a CUDA GPU (~16 GB VRAM in bfloat16); CPU/MPS work but are slow.
+
+```bash
+cd operators/molmo && uv sync
+LESLIDER_TASK="Pick the blue cube up and hold it" \
+uv run python molmo_operator.py
+```
+
+Needs `LIVEKIT_URL`, `LIVEKIT_ROOM`, and Portal creds in env / `.env`.
+
+**Flags** (all env-overridable):
+
+| flag | env | default |
+| --- | --- | --- |
+| `--model` | `MOLMO_MODEL` | `allenai/MolmoAct2-SO100_101` |
+| `--dtype` | `MOLMO_DTYPE` | `bfloat16` (`float16`, `float32` also accepted) |
+| `--num-steps` | `MOLMO_NUM_STEPS` | `10` (flow-matching solver steps per chunk) |
+| `--warmup` | `MOLMO_WARMUP` | `2` (pre-connect forward passes to bake the CUDA graph) |
+| `--no-cuda-graph` | n/a | CUDA-graph caching on by default (auto-disabled off-CUDA) |
+| `--no-normalize-language` | n/a | task-string lowercase/trim-punct on by default |
+| (default task) | `LESLIDER_TASK` | `"Pick the blue cube up and hold it"` |
+
+**RPC:** `run_molmo(payload)`. Payload is `"pick up the red cup"` or `{"prompt": "..."}`. Retargets the running policy to the new prompt, drops the in-flight chunk so the change takes effect next tick, and self-claims active-operator. Returns immediately (no completion signal). Reply is a JSON string:
+
+```json
+{"prompt": "pick up the red cup", "active_operator": "run-molmo-operator"}
+```
+
+Errors come back as `RpcError 1400` (bad JSON payload or empty prompt).
+
+### `operators/human`
+
+**Identity:** `human-operator`. No RPCs; control is local via hotkeys.
+
+Teleop driver. Reads one action per tick from a physical SO-101 leader arm and forwards it to the wire. Observations stream into rerun so the operator can see the remote cameras while flying. Calibration happens on first connect and is cached under `~/.cache/huggingface/lerobot/calibration/`.
+
+```bash
+cd operators/human && uv sync
+uv run python human_operator.py
+```
+
+Needs `LIVEKIT_URL`, `LIVEKIT_ROOM`, Portal creds, and `SO101_LEADER_PORT` (serial port of the leader arm). Optional: `SO101_LEADER_ID` to key the calibration cache.
+
+**Hotkeys** (local keyboard):
+
+| key | action |
+| --- | --- |
+| `c` | Cycle active-operator through `[self, *remote_operators]`. With no peers, toggles claim/release for self. |
+| `x` | Clean quit. |
+| `←` / `→` | Hold to drive slider velocity (handled by the leader's own listener). |
+| `↑` / `↓` | Trim slider cruise speed. |
+| space | Stop slider. |
+
+Actions are streamed every tick regardless of who is active; the robot side gates by sender, so takeover via `c` is instant.
