@@ -589,9 +589,7 @@ class Orchestrator(Agent):
                 - "Can you clean up the tools"
 
                 Use the `plan_and_execute` tool for any such request. The tool runs in the background and
-                narrates progress aloud as it works (planning, moving, picking up, etc.). After it returns,
-                briefly confirm completion in one short sentence (e.g. "Done!" or "All set, here you go.").
-                Do not restate the individual steps; they have already been narrated.
+                narrates progress aloud as it works (planning, moving, picking up, etc.).
 
                 If the user explicitly asks the robot to reset, park, go home, return to its starting
                 position, or get out of the way, call the `reset_pose` tool.
