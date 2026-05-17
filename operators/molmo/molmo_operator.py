@@ -344,6 +344,14 @@ async def main() -> None:
         help="Forward passes to run before connecting to LiveKit so the "
              "first real chunk doesn't stall the room.",
     )
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=float(os.environ.get("MOLMO_TIMEOUT", "30")),
+        help="Seconds to drive the robot before the run_molmo() RPC returns "
+             "and the operator parks. Set to 0 to disable (RPC returns "
+             "immediately after engaging, pre-timeout behaviour). Default 30s.",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO").upper())
@@ -422,12 +430,54 @@ async def main() -> None:
     # single Python-level rebinds, so no lock is needed on CPython.
     current_task = task_prompt
 
+    # When a run_molmo() RPC engages the operator with a positive
+    # timeout, we hand it an asyncio.Future that resolves once the
+    # timeout fires (or a newer RPC preempts it). All writes happen on
+    # the asyncio loop so no lock is needed on CPython.
+    done_future: Optional[asyncio.Future] = None
+    timeout_task: Optional[asyncio.Task] = None
+
+    async def _park(result: dict) -> None:
+        nonlocal done_future, timeout_task
+        if done_future is None:
+            return
+        fut = done_future
+        done_future = None
+        if timeout_task is not None and not timeout_task.done():
+            timeout_task.cancel()
+        timeout_task = None
+        if not fut.done():
+            fut.set_result(result)
+        try:
+            await op.set_active_operator(None)
+        except Exception as e:
+            print(f"[run-molmo-operator] release active-operator failed: {e}")
+
+    async def _timeout_watchdog(
+        seconds: float, prompt: str, target_future: asyncio.Future
+    ) -> None:
+        try:
+            await asyncio.sleep(seconds)
+        except asyncio.CancelledError:
+            return
+        if target_future.done() or done_future is not target_future:
+            return
+        print(
+            f"[run-molmo-operator] timeout {seconds:.2f}s elapsed for "
+            f"'{prompt}'; parking"
+        )
+        await _park({
+            "status": "done",
+            "reason": "timeout",
+            "seconds": seconds,
+        })
+
     async def run_molmo(data: RpcInvocationData) -> str:
         # Accept either a bare string ("pick up the blue cube") or a
         # JSON object ({"prompt": "..."}). The continuous tick loop
         # keeps warm-inferencing; we just retarget it and grab the
         # active-operator gate so emitted actions get through.
-        nonlocal current_task
+        nonlocal current_task, done_future, timeout_task
         payload = (data.payload or "").strip()
         new_prompt = payload
         if payload.startswith("{"):
@@ -449,13 +499,47 @@ async def main() -> None:
         # the next tick instead of waiting out the current ~1s chunk.
         runner.reset()
 
+        # Preempt any in-flight run_molmo() so its caller gets a clean
+        # reply rather than hanging on a future we're about to drop.
+        if done_future is not None and not done_future.done():
+            done_future.set_result({"status": "preempted", "prompt": new_prompt})
+        if timeout_task is not None and not timeout_task.done():
+            timeout_task.cancel()
+        timeout_task = None
+        done_future = None
+
         me_id = op.local_identity()
         await op.set_active_operator(me_id)
         print(
             f"[run-molmo-operator] run_molmo('{new_prompt}') -> "
-            f"active operator -> {me_id}"
+            f"active operator -> {me_id} timeout={args.timeout}s"
         )
-        return json.dumps({"prompt": new_prompt, "active_operator": me_id})
+
+        if args.timeout <= 0:
+            return json.dumps({
+                "prompt": new_prompt,
+                "active_operator": me_id,
+                "status": "no_timeout",
+            })
+
+        new_future = asyncio.get_running_loop().create_future()
+        done_future = new_future
+        timeout_task = asyncio.create_task(
+            _timeout_watchdog(args.timeout, new_prompt, new_future)
+        )
+
+        try:
+            result = await new_future
+        except asyncio.CancelledError:
+            if done_future is new_future:
+                await _park({"status": "cancelled"})
+            raise
+
+        return json.dumps({
+            "prompt": new_prompt,
+            "active_operator": me_id,
+            **result,
+        })
 
     op.register_rpc_method("run_molmo", run_molmo)
 
@@ -564,6 +648,10 @@ async def main() -> None:
     except KeyboardInterrupt:
         print("\n[run-molmo-operator] stopping ...")
     finally:
+        if timeout_task is not None and not timeout_task.done():
+            timeout_task.cancel()
+        if done_future is not None and not done_future.done():
+            done_future.set_result({"status": "cancelled"})
         try:
             await op.disconnect()
         finally:

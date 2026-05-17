@@ -21,10 +21,15 @@ that:
          for ``trigger_ticks`` consecutive ticks.
        * a fixed driving duration in seconds. Fires after that many
          seconds of driving, regardless of the reward signal.
-     If both are configured, whichever fires first wins. On done,
-     the tick loop parks, the active-operator slot is released, and
-     the RPC returns success. Policies with neither signal source
-     return immediately (``status: "no_terminator"``).
+     A reward classifier, if attached, is the sole terminator for
+     that policy: duration (both explicit and the default fallback)
+     is ignored. Policies without a reward classifier use their
+     explicit ``--duration`` / ``<NAME>_DURATION`` if set, otherwise
+     fall back to ``DEFAULT_DURATION`` (30 s by default,
+     env-overridable; set to 0 to disable and return immediately
+     with ``status: "no_terminator"``). On done, the tick loop
+     parks, the active-operator slot is released, and the RPC
+     returns success.
 
 The robot side runs the shared ``portal.yaml`` at the repo root, which
 publishes *two* cameras (``arm_camera`` + ``overhead_camera``). The ACT
@@ -432,7 +437,9 @@ async def main() -> None:
              "like put_down where a learned 'done' signal is overkill. "
              "If both a reward checkpoint and a duration are configured, "
              "whichever fires first parks the operator. Defaults to "
-             "PICK_UP_DURATION / PUT_DOWN_DURATION env vars.",
+             "PICK_UP_DURATION / PUT_DOWN_DURATION env vars. Any policy "
+             "without an explicit duration or reward classifier falls "
+             "back to DEFAULT_DURATION (30s; set to 0 to disable).",
     )
     parser.set_defaults(temporal_ensemble=True)
     args = parser.parse_args()
@@ -466,6 +473,18 @@ async def main() -> None:
             f"(known: {sorted(policy_paths)})"
         )
 
+    try:
+        default_duration_s: Optional[float] = float(
+            os.environ.get("DEFAULT_DURATION", "30")
+        )
+    except ValueError as e:
+        raise SystemExit(
+            f"DEFAULT_DURATION must be a number, got: "
+            f"{os.environ.get('DEFAULT_DURATION')!r}"
+        ) from e
+    if default_duration_s is not None and default_duration_s <= 0:
+        default_duration_s = None
+
     url = required_env("LIVEKIT_URL")
     room = required_env("LIVEKIT_ROOM")
     token = mint_token(IDENTITY, room)
@@ -482,7 +501,10 @@ async def main() -> None:
     policies: dict[str, LoadedPolicy] = {}
     for name, path in policy_paths.items():
         reward_path = reward_paths.get(name)
-        duration_s = durations.get(name)
+        if reward_path is not None:
+            duration_s = None
+        else:
+            duration_s = durations.get(name, default_duration_s)
         extras = []
         if reward_path:
             extras.append(f"+reward {reward_path}")
@@ -600,6 +622,11 @@ async def main() -> None:
     async def run_policy_rpc(data: RpcInvocationData) -> str:
         nonlocal current, done_future, timeout_task
         nonlocal reward_above_streak, last_reward_prob
+        caller = getattr(data, "caller_identity", None)
+        print(
+            f"[run-policy-operator] RPC run_policy received "
+            f"from={caller!r} payload={data.payload!r}"
+        )
         payload = (data.payload or "").strip()
         name = payload
         if payload.startswith("{"):
@@ -663,12 +690,17 @@ async def main() -> None:
             # No terminators attached; preserve the pre-terminator
             # behaviour and return immediately, flagging that the
             # caller is on its own for completion detection.
-            return json.dumps({
+            response = json.dumps({
                 "policy": name,
                 "cameras": list(chosen.cameras),
                 "active_operator": me_id,
                 "status": "no_terminator",
             })
+            print(
+                f"[run-policy-operator] RPC run_policy('{name}') -> "
+                f"returning to {caller!r}: {response}"
+            )
+            return response
 
         try:
             result = await new_future
@@ -679,12 +711,17 @@ async def main() -> None:
                 await _park({"status": "cancelled"})
             raise
 
-        return json.dumps({
+        response = json.dumps({
             "policy": name,
             "cameras": list(chosen.cameras),
             "active_operator": me_id,
             **result,
         })
+        print(
+            f"[run-policy-operator] RPC run_policy('{name}') -> "
+            f"returning to {caller!r}: {response}"
+        )
+        return response
 
     op.register_rpc_method("run_policy", run_policy_rpc)
 
