@@ -518,6 +518,22 @@ class PlannerToolset(AsyncToolset):
 
         return f"Completed: {task_description}"
 
+    @function_tool()
+    async def rest_pose(self, ctx: AsyncRunContext) -> str:
+        """Move the robot's arms to their rest / home position.
+
+        Use when the user explicitly asks the robot to rest, reset, park, go
+        home, get out of the way, return to its starting position, or similar.
+        Do NOT call this in response to tool-handling requests like
+        "pick up X" or "put away Y" — `plan_and_execute` already homes the
+        arms before running a plan.
+        """
+        ctx.disallow_interruptions()
+        logger.info("User-invoked rest_pose")
+        await ctx.update("Returning to rest pose")
+        await _send_to_rest_pose(ctx)
+        return "Robot is at rest."
+
 
 class Orchestrator(Agent):
     def __init__(self, camera: WorkbenchCamera) -> None:
@@ -541,6 +557,10 @@ class Orchestrator(Agent):
                 narrates progress aloud as it works (planning, moving, picking up, etc.). After it returns,
                 briefly confirm completion in one short sentence (e.g. "Done!" or "All set, here you go.").
                 Do not restate the individual steps; they have already been narrated.
+
+                If the user explicitly asks the robot to rest, reset, park, go home, return to its starting
+                position, or get out of the way, call the `rest_pose` tool instead. Do not call `rest_pose`
+                before a pick-up/put-away request — `plan_and_execute` already homes the arms itself.
                 """
             ),
             tools=[PlannerToolset(planner_llm, camera)],
@@ -576,7 +596,7 @@ async def orchestrator(ctx: JobContext):
         tts=inference.TTS(
             model="cartesia/sonic-3",
             voice="9626c31c-bec5-4cca-baa8-f8ba9e84c8bc",
-            language="en"
+            language="en",
         ),
         turn_detection=MultilingualModel(),
         vad=ctx.proc.userdata["vad"],
