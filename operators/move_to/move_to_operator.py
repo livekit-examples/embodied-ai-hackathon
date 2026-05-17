@@ -2,7 +2,7 @@
 
 Joins the leslider room as an Operator peer. Caches the latest
 ``overhead_camera`` frame and the latest synced state from the robot's
-synchronizer, and exposes two RPC methods.
+synchronizer, and exposes three RPC methods.
 
 ``move_to(description)``:
 
@@ -33,10 +33,16 @@ default values in ``RESET_POSE_DEFAULTS`` are sampled from the
 leslider's known parked pose and are a good starting point for that
 rig.
 
-Both RPCs are synchronous: they block until the loop terminates and
-return a JSON summary. They share an asyncio.Lock so a reset that
-arrives mid-move queues behind the move (and vice versa) rather than
-fighting it for active-operator control.
+``release_gripper()``: ramps ``gripper.pos`` open to a fixed released
+pose (``90``) while mirroring every other arm joint from the latest
+observation and holding ``slider.vel = 0``. Reuses the ``reset_pose``
+ramp knobs (``RESET_POSE_MAX_STEP`` / ``RESET_POSE_TOLERANCE`` /
+``RESET_POSE_TIMEOUT_S``) so per-rig tuning lives in one place.
+
+All RPCs are synchronous: they block until the loop terminates and
+return a JSON summary. They share an asyncio.Lock so a reset or
+release that arrives mid-move queues behind the move (and vice versa)
+rather than fighting it for active-operator control.
 
 Wire contract notes:
 
@@ -334,8 +340,8 @@ async def main() -> None:
     vel_invert = env_bool("SLIDER_VEL_INVERT", default=False)
     tag_offset_fn, tag_offset_desc = _build_tag_offset_fn()
     tag_family = env_str("SLIDER_APRILTAG_FAMILY", "tag16h5")
-    tag_min = 155
-    tag_max = 500
+    tag_min = 170
+    tag_max = 409
     raw_tag_id = os.environ.get("SLIDER_APRILTAG_ID", "").strip()
     want_tag_id: Optional[int] = int(raw_tag_id) if raw_tag_id else None
 
@@ -786,15 +792,144 @@ async def main() -> None:
                 "elapsed_s": elapsed_s,
             })
 
+    async def release_gripper(data: RpcInvocationData) -> str:
+        # Mirrors `latest_state` for every arm joint except the gripper,
+        # which ramps open to a fixed "released" pose (90 deg on the
+        # SO-101 follower). Same brake-and-release contract as the other
+        # RPCs: serialized behind `move_lock`, takes active-operator
+        # control, holds `slider.vel = 0`, and releases on exit. Reuses
+        # the `reset_pose` ramp knobs (`reset_max_step`,
+        # `reset_tolerance`, `reset_timeout_s`) so per-rig tuning lives
+        # in one place.
+        del data
+
+        release_target = 50.0
+
+        if not all(k in latest_state for k in ARM_POS_KEYS):
+            missing = [k for k in ARM_POS_KEYS if k not in latest_state]
+            raise RpcError.Error(
+                code=1409,
+                message=f"no robot state yet (missing: {missing})",
+                data=None,
+            )
+
+        start_state = {k: float(latest_state[k]) for k in ARM_POS_KEYS}
+        print(
+            f"[move-to-op] release_gripper start: "
+            f"gripper.pos {start_state['gripper.pos']:+.2f}->{release_target:+.2f}"
+        )
+
+        async with move_lock:
+            me = op.local_identity()
+            await op.set_active_operator(me)
+            print(f"[move-to-op] active operator -> {me}")
+
+            reached = False
+            reason = "timeout"
+            iterations = 0
+            t0 = time.monotonic()
+            final_state: dict[str, float] = dict(start_state)
+            # Open-loop ramp seed for the gripper. Same rationale as in
+            # `reset_pose`: ramping the command (not the observed pose)
+            # builds a position lead the motor can chase at full speed.
+            commanded_gripper = float(start_state["gripper.pos"])
+
+            try:
+                async for _ in pace(fps):
+                    iterations += 1
+
+                    if time.monotonic() - t0 > reset_timeout_s:
+                        reason = "timeout"
+                        break
+
+                    cur = {k: float(latest_state[k]) for k in ARM_POS_KEYS}
+                    final_state = cur
+
+                    diff = release_target - commanded_gripper
+                    if abs(diff) <= reset_max_step:
+                        commanded_gripper = release_target
+                    elif diff > 0:
+                        commanded_gripper = commanded_gripper + reset_max_step
+                    else:
+                        commanded_gripper = commanded_gripper - reset_max_step
+
+                    # Mirror everything else from the latest observation
+                    # so the arm holds its current pose while the gripper
+                    # opens. Only `gripper.pos` diverges from `cur`.
+                    next_action: dict[str, float] = {
+                        k: cur[k] for k in ARM_POS_KEYS
+                    }
+                    next_action["gripper.pos"] = commanded_gripper
+                    next_action["slider.vel"] = 0.0
+
+                    op.send_action(
+                        next_action,
+                        timestamp_us=int(time.time() * 1_000_000),
+                        in_reply_to_ts_us=latest_obs_ts_us,
+                    )
+
+                    gripper_remaining = abs(release_target - cur["gripper.pos"])
+                    if gripper_remaining <= reset_tolerance:
+                        reached = True
+                        reason = "reached"
+                        print(
+                            f"[move-to-op] release_gripper reached at iter "
+                            f"{iterations}: gripper.pos={cur['gripper.pos']:.2f}"
+                        )
+                        break
+
+                    if iterations % fps == 0:
+                        print(
+                            f"[move-to-op] release tick {iterations:>4}: "
+                            f"gripper.pos={cur['gripper.pos']:.2f} "
+                            f"cmd={commanded_gripper:.2f} "
+                            f"remaining={gripper_remaining:.2f}"
+                        )
+            finally:
+                if latest_state and all(k in latest_state for k in ARM_POS_KEYS):
+                    stop_action = {
+                        k: float(latest_state[k]) for k in ARM_POS_KEYS
+                    }
+                    stop_action["slider.vel"] = 0.0
+                    op.send_action(
+                        stop_action,
+                        timestamp_us=int(time.time() * 1_000_000),
+                        in_reply_to_ts_us=latest_obs_ts_us,
+                    )
+                try:
+                    await op.set_active_operator(None)
+                except Exception:
+                    logger.exception("set_active_operator(None) failed")
+
+            elapsed_s = time.monotonic() - t0
+            print(
+                f"[move-to-op] release_gripper done: reason={reason} "
+                f"reached={reached} iterations={iterations} "
+                f"elapsed={elapsed_s:.2f}s"
+            )
+
+            return json.dumps({
+                "target": {"gripper.pos": release_target},
+                "final": final_state,
+                "reached": reached,
+                "reason": reason,
+                "iterations": iterations,
+                "elapsed_s": elapsed_s,
+            })
+
     op.register_rpc_method("move_to", move_to)
     op.register_rpc_method("reset_pose", reset_pose)
+    op.register_rpc_method("release_gripper", release_gripper)
     op.on_operator_joined(lambda i: print(f"[move-to-op] operator joined: {i}"))
     op.on_operator_left(lambda i: print(f"[move-to-op] operator left: {i}"))
 
     print(f"[move-to-op] connecting to {url} as '{IDENTITY}' in room '{room}' ...")
     await op.connect(url, token)
     me = op.local_identity()
-    print(f"[move-to-op] connected as '{me}'; awaiting move_to/reset_pose RPCs")
+    print(
+        f"[move-to-op] connected as '{me}'; "
+        "awaiting move_to/reset_pose/release_gripper RPCs"
+    )
 
     try:
         # No tick loop. Control loops run only inside an active
