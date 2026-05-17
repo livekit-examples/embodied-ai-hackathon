@@ -18,7 +18,7 @@ The second tool is `run_policy`, which allows us to run any of our trained ACT p
 
 We collected data and trained 2 policy at SPC:
 
-- Pick up is an ACT policy is trained on 200 episodes of picking random stuff up at SPC. It is used when the agent wants to pick stuff on the table. For the agent to know when it has finished its. We also trained a sparse reward model for detecting when to stop the pick up policy.
+- Pick up is an ACT policy trained on 200 episodes of picking random stuff up at SPC. It is used when the agent wants to pick stuff on the table. We also trained a sparse reward model so the agent knows when the pick up policy has finished and can stop it.
 - Put down is another policy trained on 50 episodes of putting down stuff. However, it didn't work well so we just sample trajectories from the dataset randomly.
 
 The third tool is `run_molmo`, which utilizes MolmoACT2, a generalized VLA that can do anything given. We fine-tuned this on all the dataset we gathered at SPC so the model can better adapt to our embodiment. Results show that the model can reliably pick up and localize objects that was not in trained dataset, showing its capabilities to generalize.
@@ -38,9 +38,17 @@ All datasets are `LeRobotDataset` v3.0 captures collected at SPC on the leslider
 | [`binhpham/spc-pick-granola-bar`](https://huggingface.co/datasets/binhpham/spc-pick-granola-bar) | granola     | pick | 50       | "pick up the granola bar and hold it" | [view](https://huggingface.co/spaces/lerobot/visualize_dataset?path=%2Fbinhpham%2Fspc-pick-granola-bar%2Fepisode_0%3Ft%3D9) |
 | [`binhpham/spc-pick-sharpie`](https://huggingface.co/datasets/binhpham/spc-pick-sharpie)         | sharpie     | pick | 50       | "pick up the sharpie and hold it"     | [view](https://huggingface.co/spaces/lerobot/visualize_dataset?path=%2Fbinhpham%2Fspc-pick-sharpie%2Fepisode_0)             |
 | [`binhpham/spc-pick-screwdriver`](https://huggingface.co/datasets/binhpham/spc-pick-screwdriver) | screwdriver | pick | 50       | "pick up the screwdriver and hold it" | [view](https://huggingface.co/spaces/lerobot/visualize_dataset?path=%2Fbinhpham%2Fspc-pick-screwdriver%2Fepisode_0)         |
-| [`binhpham/spc-pick-stuff`](https://huggingface.co/datasets/binhpham/spc-pick-stuff)             | all         | pick | 150      |                                       | [view](https://huggingface.co/spaces/lerobot/visualize_dataset)                                                             |
+| [`binhpham/spc-pick-stuff`](https://huggingface.co/datasets/binhpham/spc-pick-stuff)             | all         | pick | 200      |                                       | [view](https://huggingface.co/spaces/lerobot/visualize_dataset)                                                             |
 | [`binhpham/spc-mock-put-down`](https://huggingface.co/datasets/binhpham/spc-mock-put-down)       | nothing     | put  | 50       | "mock put down"                       | [view](https://huggingface.co/spaces/lerobot/visualize_dataset?path=%2Fbinhpham%2Fspc-mock-put-down%2Fepisode_0)            |
 | [`j1823/spc-pick-up-scissors`](https://huggingface.co/datasets/j1823/spc-pick-up-scissors)       | scissors    | pick | 50       | "pick up scissors"                    | [view](https://huggingface.co/spaces/lerobot/visualize_dataset?path=%2Fj1823%2Fspc-pick-up-scissors%2Fepisode_0)            |
+
+## Models
+
+| Model                                                                                     | What                                                                         | Trained on                                          |
+| ----------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- | --------------------------------------------------- |
+| _pick-stuff ACT policy (TBD)_                                                             | ACT policy that drives `run_policy pick_up`.                                 | `binhpham/spc-pick-stuff` (the merged pick corpus). |
+| [`binhpham/spc-pick-stuff-reward`](https://huggingface.co/binhpham/spc-pick-stuff-reward) | Sparse-reward classifier that signals when the `pick_up` ACT policy is done. | `binhpham/spc-pick-stuff`.                          |
+| [`binhpham/molmoact2-leslider`](https://huggingface.co/binhpham/molmoact2-leslider)       | MolmoAct2 fine-tuned for the leslider rig. Powers `run_molmo`.               | All SPC pick captures.                              |
 
 ## Priors
 
