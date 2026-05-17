@@ -72,9 +72,16 @@ result = await op.perform_rpc(
 
 ```
 --policy NAME=PATH                # repeat per checkpoint
+--default-policy NAME             # pre-select on startup (env: RUN_POLICY_DEFAULT)
 --no-temporal-ensemble            # chunk-replan instead of per-tick ensemble
 --temporal-ensemble-coeff 0.01    # default; lower = smoother, laggier
 ```
+
+`--default-policy` lets the tick loop warm-start with a chosen policy
+already selected (so it's producing actions immediately, just like
+`molmo_operator`), without claiming active-operator. A peer (controller
+or teleop `c`) still flips the active-operator slot; the warm policy
+just means there's no inference delay when they do.
 
 ## Notes
 

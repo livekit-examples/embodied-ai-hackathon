@@ -249,6 +249,15 @@ async def main() -> None:
         default=0.01,
         help="Decay coefficient for temporal ensemble (default 0.01).",
     )
+    parser.add_argument(
+        "--default-policy",
+        default=os.environ.get("RUN_POLICY_DEFAULT"),
+        metavar="NAME",
+        help="Pre-select this policy at startup so the tick loop is warm "
+             "before any run_policy() RPC. Does not auto-claim the "
+             "active-operator slot — a peer (or teleop `c`) still has to "
+             "(env: RUN_POLICY_DEFAULT).",
+    )
     parser.set_defaults(temporal_ensemble=True)
     args = parser.parse_args()
 
@@ -308,6 +317,18 @@ async def main() -> None:
     # handler runs on the asyncio loop), single reader (the tick loop on
     # the same loop), so no lock needed on CPython.
     current: Optional[LoadedPolicy] = None
+    if args.default_policy:
+        if args.default_policy not in policies:
+            raise SystemExit(
+                f"--default-policy {args.default_policy!r} not in registered "
+                f"policies: {sorted(policies)}"
+            )
+        current = policies[args.default_policy]
+        current.reset()
+        print(
+            f"[run-policy-operator] default policy '{args.default_policy}' "
+            f"pre-selected (warm); awaiting active-operator handoff"
+        )
 
     async def run_policy_rpc(data: RpcInvocationData) -> str:
         nonlocal current
