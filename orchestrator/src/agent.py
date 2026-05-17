@@ -2,13 +2,12 @@ import asyncio
 import base64
 import json
 import logging
-import os
 import textwrap
-from contextlib import asynccontextmanager
-from pathlib import Path
+from contextlib import asynccontextmanager, suppress
 from typing import Annotated, Literal
 
 from dotenv import load_dotenv
+from livekit import rtc
 from livekit.agents import (
     Agent,
     AgentServer,
@@ -21,19 +20,13 @@ from livekit.agents import (
     inference,
     room_io,
 )
-from livekit.agents.llm import ChatContext, ImageContent
+from livekit.agents.llm import ChatContext, ChatMessage, ImageContent
 from livekit.agents.llm.async_toolset import AsyncRunContext, AsyncToolset
+from livekit.agents.utils.images import EncodeOptions, encode
 from livekit.plugins import ai_coustics, silero
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
 from livekit.rtc.rpc import RpcError
 from pydantic import BaseModel, Field
-
-# Repo-relative path to the toolbench image used as visual context for planning.
-TOOLS_IMAGE_PATH = Path(__file__).resolve().parents[1] / "images" / "real_setup.jpg"
-# Pre-encode the image once at import time; it's static for the demo.
-TOOLS_IMAGE_DATA_URL = "data:image/jpeg;base64," + base64.b64encode(
-    TOOLS_IMAGE_PATH.read_bytes()
-).decode("utf-8")
 
 logger = logging.getLogger("agent")
 
@@ -42,6 +35,131 @@ load_dotenv(".env.local")
 # Identities of the operator participants to invoke RPCs on.
 OPERATOR_MOVE_TO_IDENTITY = "move-to-operator"
 OPERATOR_RUN_POLICY_IDENTITY = "run-policy-operator"
+
+# Identity of the participant publishing the workbench overhead camera,
+# and the published track name we subscribe to for visual context.
+ROBOT_IDENTITY = "robot"
+OVERHEAD_CAMERA_TRACK_NAME = "overhead_camera"
+
+
+class WorkbenchCamera:
+    """Subscribes to the robot's `overhead_camera` track and buffers the latest frame.
+
+    Frames are consumed in the background; callers read `latest_frame` to get
+    the most recent `rtc.VideoFrame` (or `None` if the robot hasn't connected
+    yet or has disconnected). The latest frame is cleared on
+    `track_unsubscribed` so we never feed stale imagery to the planner.
+    """
+
+    def __init__(self, room: rtc.Room) -> None:
+        self._room = room
+        self._latest_frame: rtc.VideoFrame | None = None
+        self._stream: rtc.VideoStream | None = None
+        self._reader_task: asyncio.Task | None = None
+        # Holds background stream-close tasks so they aren't garbage-collected
+        # before they finish (RUF006).
+        self._pending_closes: set[asyncio.Task] = set()
+
+        for participant in room.remote_participants.values():
+            if participant.identity != ROBOT_IDENTITY:
+                continue
+            for publication in participant.track_publications.values():
+                if (
+                    publication.name == OVERHEAD_CAMERA_TRACK_NAME
+                    and publication.track is not None
+                ):
+                    self._start_reader(publication.track)
+
+        room.on("track_subscribed", self._on_track_subscribed)
+        room.on("track_unsubscribed", self._on_track_unsubscribed)
+
+    @property
+    def latest_frame(self) -> rtc.VideoFrame | None:
+        return self._latest_frame
+
+    def _on_track_subscribed(
+        self,
+        track: rtc.Track,
+        publication: rtc.RemoteTrackPublication,
+        participant: rtc.RemoteParticipant,
+    ) -> None:
+        if (
+            participant.identity != ROBOT_IDENTITY
+            or publication.name != OVERHEAD_CAMERA_TRACK_NAME
+            or track.kind != rtc.TrackKind.KIND_VIDEO
+        ):
+            return
+        self._start_reader(track)
+
+    def _on_track_unsubscribed(
+        self,
+        track: rtc.Track,
+        publication: rtc.RemoteTrackPublication,
+        participant: rtc.RemoteParticipant,
+    ) -> None:
+        if (
+            participant.identity != ROBOT_IDENTITY
+            or publication.name != OVERHEAD_CAMERA_TRACK_NAME
+        ):
+            return
+        logger.info("overhead_camera track unsubscribed; clearing latest frame")
+        self._latest_frame = None
+        self._cancel_reader()
+
+    def _start_reader(self, track: rtc.Track) -> None:
+        self._cancel_reader()
+        logger.info("Subscribing to overhead_camera track from robot")
+        stream = rtc.VideoStream(track)
+        self._stream = stream
+
+        async def read_stream() -> None:
+            try:
+                async for event in stream:
+                    self._latest_frame = event.frame
+            except Exception:
+                logger.exception("overhead_camera reader failed")
+
+        self._reader_task = asyncio.create_task(read_stream())
+
+    def _cancel_reader(self) -> None:
+        if self._reader_task is not None and not self._reader_task.done():
+            self._reader_task.cancel()
+        self._reader_task = None
+        if self._stream is not None:
+            close_task = asyncio.create_task(self._stream.aclose())
+            self._pending_closes.add(close_task)
+            close_task.add_done_callback(self._pending_closes.discard)
+            self._stream = None
+
+    async def aclose(self) -> None:
+        self._latest_frame = None
+        task = self._reader_task
+        self._reader_task = None
+        if task is not None and not task.done():
+            task.cancel()
+            with suppress(asyncio.CancelledError, Exception):
+                await task
+        if self._stream is not None:
+            await self._stream.aclose()
+            self._stream = None
+
+
+# Encode frames at their native resolution (the overhead camera publishes at
+# 640x480, which is already small and detailed enough for tool recognition).
+_FRAME_ENCODE_OPTIONS = EncodeOptions(format="JPEG")
+
+
+def _frame_to_image_content(frame: rtc.VideoFrame) -> ImageContent:
+    """Encode a video frame as a base64 JPEG data URL and wrap it in ImageContent.
+
+    Following https://docs.livekit.io/agents/multimodality/vision/images/ —
+    `ImageContent` accepts a `data:` URL, so we encode the frame ourselves
+    rather than handing the raw `VideoFrame` to the LLM (which doesn't survive
+    some LLM provider serializers, including OpenAI structured-output mode).
+    """
+    image_bytes = encode(frame, _FRAME_ENCODE_OPTIONS)
+    data_url = "data:image/jpeg;base64," + base64.b64encode(image_bytes).decode("utf-8")
+    return ImageContent(image=data_url)
 
 
 # Plan schema: a discriminated union of robot actions. The planner LLM is
@@ -93,7 +211,7 @@ def _describe_step(step: Action) -> str:
 
 
 async def _execute_run_policy(step: RunPolicy, local_participant) -> None:
-     await local_participant.perform_rpc(
+    await local_participant.perform_rpc(
         destination_identity=OPERATOR_RUN_POLICY_IDENTITY,
         method="run_policy",
         payload=step.policy,
@@ -299,9 +417,10 @@ class PlannerToolset(AsyncToolset):
     the tool returns.
     """
 
-    def __init__(self, planner_llm: inference.LLM) -> None:
+    def __init__(self, planner_llm: inference.LLM, camera: WorkbenchCamera) -> None:
         super().__init__(id="planner")
         self._planner_llm = planner_llm
+        self._camera = camera
 
     @function_tool()
     async def plan_and_execute(
@@ -321,6 +440,16 @@ class PlannerToolset(AsyncToolset):
         ctx.disallow_interruptions()
         logger.info("Planning task: %s", task_description)
 
+        frame = self._camera.latest_frame
+        if frame is None:
+            logger.warning(
+                "plan_and_execute invoked but no overhead_camera frame is available"
+            )
+            return (
+                "Error: no overhead camera feed available; cannot plan without "
+                "seeing the workbench."
+            )
+
         await ctx.update(f"Planning how to {task_description}")
 
         planner_ctx = ChatContext()
@@ -329,7 +458,7 @@ class PlannerToolset(AsyncToolset):
             role="user",
             content=[
                 _PLANNER_USER_PROMPT_HEADER + f"\n# Task: {task_description}\n",
-                ImageContent(image=TOOLS_IMAGE_DATA_URL),
+                _frame_to_image_content(frame),
             ],
         )
 
@@ -354,14 +483,15 @@ class PlannerToolset(AsyncToolset):
 
 
 class Orchestrator(Agent):
-    def __init__(self) -> None:
+    def __init__(self, camera: WorkbenchCamera) -> None:
         # Dedicated planner LLM used inside the planner toolset for
         # vision-based reasoning, kept separate from the voice pipeline LLM
         # to avoid mixing concerns.
-        planner_llm = inference.LLM(model="openai/gpt-5.2-chat-latest")
+        planner_llm = inference.LLM(model="openai/gpt-5.3-chat-latest")
+        self._camera = camera
 
         super().__init__(
-            llm=inference.LLM(model="openai/gpt-5.2-chat-latest"),
+            llm=inference.LLM(model="openai/gpt-5.3-chat-latest"),
             instructions=textwrap.dedent(
                 """\
                 You are the toolbench helper, an embodied AI agent equipped with two robotic arms on linear sliders.
@@ -376,8 +506,15 @@ class Orchestrator(Agent):
                 Do not restate the individual steps; they have already been narrated.
                 """
             ),
-            tools=[PlannerToolset(planner_llm)],
+            tools=[PlannerToolset(planner_llm, camera)],
         )
+
+    async def on_user_turn_completed(
+        self, turn_ctx: ChatContext, new_message: ChatMessage
+    ) -> None:
+        frame = self._camera.latest_frame
+        if frame is not None:
+            new_message.content.append(_frame_to_image_content(frame))
 
 
 server = AgentServer()
@@ -409,8 +546,11 @@ async def orchestrator(ctx: JobContext):
 
     await ctx.connect()
 
+    camera = WorkbenchCamera(ctx.room)
+    ctx.add_shutdown_callback(camera.aclose)
+
     await session.start(
-        agent=Orchestrator(),
+        agent=Orchestrator(camera),
         room=ctx.room,
         room_options=room_io.RoomOptions(
             participant_identity="user",
