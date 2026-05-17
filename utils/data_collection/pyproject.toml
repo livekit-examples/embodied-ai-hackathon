@@ -1,0 +1,37 @@
+[project]
+name = "portal-hitl"
+version = "0.1.0"
+description = "Human-in-the-loop teleop + recording on top of livekit-portal. SO-101-on-linear-slider (leslider) driven by a remote operator; the operator side records LeRobotDataset episodes and can hand off to a policy."
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "livekit-portal>=0.2.1",
+    "livekit-api>=0.7",
+    "lerobot[feetech]>=0.5",
+    "lerobot_robot_so101_slider",
+    "lerobot_teleoperator_so101_with_slider",
+    "rerun-sdk>=0.26",
+    "numpy>=1.24",
+    "python-dotenv>=1",
+    "opencv-python>=4.5",
+    "pynput>=1.7",
+    "torch>=2.2",
+]
+
+[dependency-groups]
+# Cloud training environments don't need livekit / pynput / opencv. Match
+# leslider's `train` group so `uv sync --only-group train` produces a
+# minimal trainer image.
+train = [
+    "lerobot[feetech]>=0.5",
+]
+
+# Flat layout on purpose — `uv run robot.py` / `uv run teleoperator.py` /
+# `uv run policy.py` from this directory. No CLI, no package, no wheel.
+# Read the scripts top-to-bottom; they are the example.
+
+[tool.uv.sources]
+# Same git deps as portal-leslider. Pinning to the leslider repo guarantees
+# the slider follower / leader are the exact ones that produced the
+# reference checkpoints in policies/<algo>/.
+lerobot_robot_so101_slider = { git = "https://github.com/pham-tuan-binh/leslider", subdirectory = "packages/lerobot_robot_so101_slider" }
+lerobot_teleoperator_so101_with_slider = { git = "https://github.com/pham-tuan-binh/leslider", subdirectory = "packages/lerobot_teleoperator_so101_with_slider" }

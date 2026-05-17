@@ -1,0 +1,38 @@
+name: act-portal-hitl
+
+resources:
+  cloud: nebius
+  accelerators: H100:1
+  cpus: 8+
+  memory: 32+
+  disk_size: 500
+  use_spot: false
+  autostop:
+    idle_minutes: 10
+    down: false
+
+workdir: .
+
+file_mounts:
+  /outputs:
+    source: nebius://lerobot
+    mode: MOUNT
+
+setup: |
+  sudo apt-get update -y
+  sudo apt-get install -y python3-dev libevdev-dev ffmpeg \
+    libavformat-dev libavcodec-dev libavutil-dev libswscale-dev libswresample-dev
+  pip install uv --quiet
+  uv sync --only-group train
+
+envs:
+  # Override at launch with `sky launch -e DATASET_REPO_ID=you/your-dataset ...`
+  DATASET_REPO_ID: local/portal-hitl
+  RUN_NAME: act-leslider-hitl
+  NUM_STEPS: 20000
+  BATCH_SIZE: 64
+  LR: 5e-5
+  CHUNK_SIZE: 50
+
+run: |
+  uv run python policies/act/train.py
