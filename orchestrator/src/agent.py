@@ -93,8 +93,11 @@ def _describe_step(step: Action) -> str:
 
 
 async def _execute_run_policy(step: RunPolicy, local_participant) -> None:
-    logger.warning("Not wired to RPC yet")
-    await asyncio.sleep(_STUB_STEP_DURATION_S)
+     await local_participant.perform_rpc(
+        destination_identity=OPERATOR_RUN_POLICY_IDENTITY,
+        method="run_policy",
+        payload=step.policy,
+    )
 
 
 async def _execute_move_to(step: MoveTo, local_participant) -> None:
@@ -355,10 +358,10 @@ class Orchestrator(Agent):
         # Dedicated planner LLM used inside the planner toolset for
         # vision-based reasoning, kept separate from the voice pipeline LLM
         # to avoid mixing concerns.
-        planner_llm = inference.LLM(model="openai/gpt-5.2-chat-latest")
+        planner_llm = inference.LLM(model="openai/gpt-5.5")
 
         super().__init__(
-            llm=inference.LLM(model="openai/gpt-5.2-chat-latest"),
+            llm=inference.LLM(model="openai/gpt-5.5"),
             instructions=textwrap.dedent(
                 """\
                 You are the toolbench helper, an embodied AI agent equipped with two robotic arms on linear sliders.
