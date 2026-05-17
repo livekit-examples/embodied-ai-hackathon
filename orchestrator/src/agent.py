@@ -36,6 +36,7 @@ load_dotenv(".env.local")
 # operator also serves reset_pose, since reset_pose is just another arm motion.
 OPERATOR_MOVE_TO_IDENTITY = "move-to-operator"
 OPERATOR_RUN_POLICY_IDENTITY = "run-policy-operator"
+OPERATOR_RUN_MOLMO_IDENTITY = "run-molmo-operator"
 
 # Operator RPCs (move_to, run_policy, reset_pose) block on real arm motion which
 # can take tens of seconds; give them plenty of headroom before timing out.
@@ -259,6 +260,35 @@ async def _send_to_reset_pose(ctx: AsyncRunContext) -> None:
         # Same failure mode as the other operator RPCs: log and continue if
         # the move-to operator isn't connected.
         logger.warning("reset_pose RPC failed: %s", e)
+
+
+async def _send_run_molmo(ctx: AsyncRunContext, prompt: str) -> str | None:
+    """Engage the MolmoAct2 VLA operator with a natural-language prompt.
+
+    Not a planner action: exposed only via the `run_molmo` function tool,
+    which is reserved for requests where the user explicitly names the
+    `run_molmo` policy. Returns an error string on failure, or None on
+    success. Same room-availability convention as the other operator RPCs.
+    """
+    try:
+        room = ctx.session.room_io.room
+    except RuntimeError:
+        room = None
+    if room is None:
+        logger.warning("No room available; skipping run_molmo RPC")
+        return None
+    logger.info("Sending run_molmo RPC with prompt: %r", prompt)
+    try:
+        await room.local_participant.perform_rpc(
+            destination_identity=OPERATOR_RUN_MOLMO_IDENTITY,
+            method="run_molmo",
+            payload=json.dumps({"prompt": prompt}),
+            response_timeout=_OPERATOR_RPC_TIMEOUT_S,
+        )
+        return None
+    except RpcError as e:
+        logger.warning("run_molmo RPC failed: %s", e)
+        return str(e)
 
 
 async def _send_release_gripper(ctx: AsyncRunContext) -> None:
@@ -577,6 +607,31 @@ class PlannerToolset(AsyncToolset):
         return "Robot is at reset."
 
     @function_tool()
+    async def run_molmo(self, ctx: AsyncRunContext, prompt: str) -> str:
+        """Hand control to the MolmoAct2 VLA policy with a natural-language prompt.
+
+        Reserved for requests where the user EXPLICITLY names `run_molmo` (e.g.
+        "pick this up using run_molmo", "use run_molmo to grab the screwdriver",
+        "run molmo to put away the hammer"). Do NOT call this for ordinary
+        pick-up / put-away / cleanup requests — those are handled by
+        `plan_and_execute`. If the user just says "pick this up" without
+        naming run_molmo, use `plan_and_execute` instead.
+
+        Args:
+            prompt: A short natural-language instruction passed directly to the
+            MolmoAct2 policy (e.g. "pick up the blue cube", "grasp the red
+            screwdriver"). Strip any "using run_molmo" framing — the policy
+            only needs the underlying task.
+        """
+        ctx.disallow_interruptions()
+        logger.info("User-invoked run_molmo: %s", prompt)
+        await ctx.update(f"Running molmo policy: {prompt}")
+        error = await _send_run_molmo(ctx, prompt)
+        if error is not None:
+            return f"Error: run_molmo failed: {error}"
+        return f"run_molmo completed: {prompt}"
+
+    @function_tool()
     async def release_gripper(self, ctx: AsyncRunContext) -> str:
         """Manually open / release the robot's gripper.
 
@@ -626,6 +681,12 @@ class Orchestrator(Agent):
 
                 If the user explicitly asks the robot to release / open the gripper or drop / let go of
                 what it is holding, call the `release_gripper` tool.
+
+                Only call the `run_molmo` tool when the user EXPLICITLY names it in the request,
+                for example "pick this up using run_molmo", "use run_molmo to grab the wrench",
+                or "run molmo to put away the hammer". For ordinary requests like "pick this up"
+                or "put the screwdriver away" that do not mention run_molmo, use `plan_and_execute`
+                instead. Never substitute `run_molmo` for `plan_and_execute` on your own.
                 """
             ),
             tools=[PlannerToolset(planner_llm, camera)],
