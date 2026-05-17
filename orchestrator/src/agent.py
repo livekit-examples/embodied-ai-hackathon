@@ -512,8 +512,6 @@ class PlannerToolset(AsyncToolset):
             )
 
             await pub.set_plan([_describe_step(s) for s in plan.steps])
-            await ctx.update("Getting into position")
-            await _send_to_reset_pose(ctx)
             await execute_plan(ctx, plan, pub)
 
         return f"Completed: {task_description}"
@@ -556,11 +554,10 @@ class Orchestrator(Agent):
                 Use the `plan_and_execute` tool for any such request. The tool runs in the background and
                 narrates progress aloud as it works (planning, moving, picking up, etc.). After it returns,
                 briefly confirm completion in one short sentence (e.g. "Done!" or "All set, here you go.").
-                Do not resetate the individual steps; they have already been narrated.
+                Do not restate the individual steps; they have already been narrated.
 
-                If the user explicitly asks the robot to reset, reset, park, go home, return to its starting
-                position, or get out of the way, call the `reset_pose` tool instead. Do not call `reset_pose`
-                before a pick-up/put-away request — `plan_and_execute` already homes the arms itself.
+                If the user explicitly asks the robot to reset, park, go home, return to its starting
+                position, or get out of the way, call the `reset_pose` tool.
                 """
             ),
             tools=[PlannerToolset(planner_llm, camera)],
