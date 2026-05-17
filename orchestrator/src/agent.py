@@ -36,6 +36,10 @@ load_dotenv(".env.local")
 OPERATOR_MOVE_TO_IDENTITY = "move-to-operator"
 OPERATOR_RUN_POLICY_IDENTITY = "run-policy-operator"
 
+# Operator RPCs (move_to, run_policy) block on real arm motion which can take
+# tens of seconds; give them plenty of headroom before timing out.
+_OPERATOR_RPC_TIMEOUT_S = 180.0
+
 # Identity of the participant publishing the workbench overhead camera,
 # and the published track name we subscribe to for visual context.
 ROBOT_IDENTITY = "robot"
@@ -215,6 +219,7 @@ async def _execute_run_policy(step: RunPolicy, local_participant) -> None:
         destination_identity=OPERATOR_RUN_POLICY_IDENTITY,
         method="run_policy",
         payload=step.policy,
+        response_timeout=_OPERATOR_RPC_TIMEOUT_S,
     )
 
 
@@ -223,6 +228,7 @@ async def _execute_move_to(step: MoveTo, local_participant) -> None:
         destination_identity=OPERATOR_MOVE_TO_IDENTITY,
         method="move_to",
         payload=step.object_name,
+        response_timeout=_OPERATOR_RPC_TIMEOUT_S,
     )
 
 
