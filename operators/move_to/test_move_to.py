@@ -44,8 +44,8 @@ from livekit.portal import Operator, OperatorConfig, PortalError
 
 from _common import load_env, mint_token, required_env
 
-DEFAULT_IDENTITY = "move_to_tester"
-DEFAULT_DESTINATION = "move_to_operator"
+DEFAULT_IDENTITY = "move-to-tester"
+DEFAULT_DESTINATION = "move-to-operator"
 DEFAULT_METHOD = "move_to"
 CONFIG_PATH = pathlib.Path(__file__).resolve().parent.parent.parent / "portal.yaml"
 

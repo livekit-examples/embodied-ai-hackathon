@@ -16,3 +16,10 @@ dependencies = [
 
 # Flat layout: `uv run move_to_operator.py` from this directory. No CLI,
 # no package, no wheel — the script is the example.
+
+[tool.uv.sources]
+# Same git deps as portal-leslider. Pinning to the leslider repo guarantees
+# the slider follower / leader are the exact ones that produced the
+# reference checkpoints in policies/<algo>/.
+lerobot_robot_so101_slider = { git = "https://github.com/pham-tuan-binh/leslider", subdirectory = "packages/lerobot_robot_so101_slider" }
+lerobot_teleoperator_so101_with_slider = { git = "https://github.com/pham-tuan-binh/leslider", subdirectory = "packages/lerobot_teleoperator_so101_with_slider" }
