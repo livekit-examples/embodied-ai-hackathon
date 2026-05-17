@@ -1,0 +1,148 @@
+'use client';
+
+import { memo, useEffect, useMemo, useRef } from 'react';
+import { AnimatePresence, motion } from 'motion/react';
+import scrollIntoView from 'smooth-scroll-into-view-if-needed';
+import { useTextStream } from '@livekit/components-react';
+import { Fade } from '@/components/agents-ui/blocks/agent-session-view-01/components/agent-session-block';
+import { cn } from '@/lib/shadcn/utils';
+
+const PLAN_TOPIC = 'agent.plan';
+
+export type StepStatus = 'pending' | 'in_progress' | 'completed' | 'error';
+export type PlanPhase = 'idle' | 'planning' | 'executing' | 'completed' | 'error';
+
+export interface PlanStep {
+  description: string;
+  status: StepStatus;
+}
+
+export interface AgentPlan {
+  phase: PlanPhase;
+  task: string;
+  steps: PlanStep[];
+}
+
+const EMPTY_PLAN: AgentPlan = { phase: 'idle', task: '', steps: [] };
+
+/**
+ * Subscribes to the `agent.plan` text stream published by the orchestrator
+ * agent's `PlanProgress` helper and returns the latest snapshot. The agent
+ * sends a full snapshot on each update, so the tail of `textStreams` is the
+ * current state.
+ */
+export function useAgentPlan(): AgentPlan {
+  const { textStreams } = useTextStream(PLAN_TOPIC);
+  return useMemo(() => {
+    const latest = textStreams[textStreams.length - 1];
+    if (!latest) return EMPTY_PLAN;
+    try {
+      const parsed = JSON.parse(latest.text) as Partial<AgentPlan>;
+      return {
+        phase: parsed.phase ?? 'idle',
+        task: parsed.task ?? '',
+        steps: parsed.steps ?? [],
+      };
+    } catch {
+      return EMPTY_PLAN;
+    }
+  }, [textStreams]);
+}
+
+const STATUS_LABEL: Record<StepStatus, string> = {
+  pending: 'pending',
+  in_progress: 'in progress',
+  completed: 'done',
+  error: 'failed',
+};
+
+/**
+ * Renders the agent's current plan and per-step status as a simple numbered
+ * list, sourced from the `agent.plan` text stream. Renders nothing while
+ * the agent is idle. Styling is intentionally minimal for now.
+ */
+export function AgentPlanView({ className }: { className?: string }) {
+  const { phase, task, steps } = useAgentPlan();
+  if (phase === 'idle') return null;
+
+  const showList = phase === 'executing' || phase === 'completed' || phase === 'error';
+
+  return (
+    <div className={cn('mx-auto w-full max-w-2xl pb-8 text-xl', className)}>
+      <AnimatePresence mode="wait" initial={false}>
+        {phase === 'planning' && (
+          <motion.p
+            key="planning"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.4, ease: 'easeInOut' }}
+          >
+            Planning{task ? `: ${task}` : '...'}
+          </motion.p>
+        )}
+        {showList && (
+          <motion.div
+            key="list"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.4, ease: 'easeInOut' }}
+          >
+            {phase === 'completed' && <p className="font-semibold">Done!</p>}
+            {phase === 'error' && <p className="font-semibold">Failed!</p>}
+            <AgentPlanList steps={steps} />
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
+
+function AgentPlanList({ steps }: { steps: PlanStep[] }) {
+  return (
+    <div className="relative">
+      <ol className="bg-background flex h-36 flex-col gap-2 overflow-y-auto rounded-md px-2 py-10 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+        {steps.map((step, index) => (
+          <AgentPlanItem key={index} index={index + 1} {...step} />
+        ))}
+      </ol>
+      <Fade top className="absolute inset-x-0 top-0 z-10 h-10 rounded-t-md" />
+      <Fade bottom className="absolute inset-x-0 bottom-0 z-10 h-10 rounded-b-md" />
+    </div>
+  );
+}
+
+const AgentPlanItem = memo(function AgentPlanItem({
+  index,
+  description,
+  status,
+}: PlanStep & { index: number }) {
+  const isActive = status === 'in_progress';
+  const isError = status === 'error';
+  const ref = useRef<HTMLLIElement>(null);
+
+  useEffect(() => {
+    if (!isActive || !ref.current) return;
+    scrollIntoView(ref.current, {
+      behavior: 'smooth',
+      block: 'center',
+      duration: 1200,
+      ease: (t) => t * t * (3 - 2 * t),
+    });
+  }, [isActive]);
+
+  return (
+    <li
+      ref={ref}
+      className={cn(
+        'flex items-baseline gap-2 transition-opacity duration-1000 ease-in-out will-change-[opacity]',
+        isActive || isError ? 'opacity-100' : 'opacity-40'
+      )}
+    >
+      <span className="min-w-8 text-right font-mono">{`${index}.`}</span>
+      <span className="flex-1">{description}</span>
+      <span className="opacity-20">({STATUS_LABEL[status]})</span>
+    </li>
+  );
+});
