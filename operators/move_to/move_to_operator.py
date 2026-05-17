@@ -217,7 +217,7 @@ RESET_POSE_DEFAULTS: dict[str, float] = {
     "elbow_flex.pos":    90.73,
     "wrist_flex.pos":    73.01,
     "wrist_roll.pos":     0.04,
-    "gripper.pos":       57.69,
+    "gripper.pos":       0.69,
 }
 
 logger = logging.getLogger(__name__)
