@@ -347,10 +347,10 @@ async def main() -> None:
     parser.add_argument(
         "--timeout",
         type=float,
-        default=float(os.environ.get("MOLMO_TIMEOUT", "30")),
+        default=float(os.environ.get("MOLMO_TIMEOUT", "60")),
         help="Seconds to drive the robot before the run_molmo() RPC returns "
              "and the operator parks. Set to 0 to disable (RPC returns "
-             "immediately after engaging, pre-timeout behaviour). Default 30s.",
+             "immediately after engaging, pre-timeout behaviour). Default 60s.",
     )
     args = parser.parse_args()
 
