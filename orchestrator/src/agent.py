@@ -614,8 +614,12 @@ class Orchestrator(Agent):
                 narrates progress aloud as it works (planning, moving, picking up, etc.).
 
                 If `plan_and_execute` returns a string that begins with "Error:", briefly apologize and
-                tell the user which step failed in one short sentence (the message contains the step
-                number and reason). Do not retry automatically.
+                tell the user what went wrong in one short sentence. The error message contains a step
+                number and a raw technical reason (e.g. RPC timeouts, internal exception text, server
+                identifiers) which may not be useful or intelligible to the user — translate it into
+                plain language and only mention details the user can act on (e.g. which step failed, or
+                that the robot couldn't reach / grasp something). Do not read out the raw error text
+                verbatim, and do not retry automatically.
 
                 If the user explicitly asks the robot to reset, park, go home, return to its starting
                 position, or get out of the way, call the `reset_pose` tool.
