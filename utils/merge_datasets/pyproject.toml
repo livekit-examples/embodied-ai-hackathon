@@ -1,0 +1,13 @@
+[project]
+name = "merge-datasets"
+version = "0.1.0"
+description = "Merge LeRobotDataset v3.0 directories produced by utils/data_collection."
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.24",
+    "pandas>=2.0",
+    "pyarrow>=14",
+]
+
+[project.scripts]
+merge-datasets = "merge_datasets:main"

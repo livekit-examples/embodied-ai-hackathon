@@ -1,0 +1,15 @@
+[project]
+name = "train-sparse-reward"
+version = "0.1.0"
+description = "Train a single-step sparse-reward classifier (task done? 0/1) on a portal-hitl LeRobotDataset, using the same inputs as ACT."
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "lerobot[feetech]>=0.5",
+    "torch>=2.2",
+    "torchvision>=0.17",
+    "numpy>=1.24",
+    "pillow>=10",
+    "tqdm>=4.66",
+]
+
+# Run scripts directly with `uv run python train.py` — no CLI, no wheel.
