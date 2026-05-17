@@ -275,7 +275,7 @@ async def _execute_run_policy(step: RunPolicy, local_participant) -> None:
     await local_participant.perform_rpc(
         destination_identity=OPERATOR_RUN_POLICY_IDENTITY,
         method="run_policy",
-        payload=json.dumps({"policy": step.policy, "side": step.arm}),
+        payload=json.dumps({"policy": step.policy, "side": "right"}),
         response_timeout=_OPERATOR_RPC_TIMEOUT_S,
     )
 
