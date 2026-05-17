@@ -33,11 +33,11 @@ logger = logging.getLogger("agent")
 load_dotenv(".env.local")
 
 # Identities of the operator participants to invoke RPCs on. The move-to
-# operator also serves rest_pose, since rest_pose is just another arm motion.
+# operator also serves reset_pose, since reset_pose is just another arm motion.
 OPERATOR_MOVE_TO_IDENTITY = "move-to-operator"
 OPERATOR_RUN_POLICY_IDENTITY = "run-policy-operator"
 
-# Operator RPCs (move_to, run_policy, rest_pose) block on real arm motion which
+# Operator RPCs (move_to, run_policy, reset_pose) block on real arm motion which
 # can take tens of seconds; give them plenty of headroom before timing out.
 _OPERATOR_RPC_TIMEOUT_S = 180.0
 
@@ -233,8 +233,8 @@ async def _execute_move_to(step: MoveTo, local_participant) -> None:
     )
 
 
-async def _send_to_rest_pose(ctx: AsyncRunContext) -> None:
-    """Move the robot to its rest pose before plan execution.
+async def _send_to_reset_pose(ctx: AsyncRunContext) -> None:
+    """Move the robot to its reset pose before plan execution.
 
     Not a planner action — a hardcoded prelude invoked at the start of every
     `plan_and_execute` call. Pulls the room from `ctx` itself and no-ops when
@@ -246,19 +246,19 @@ async def _send_to_rest_pose(ctx: AsyncRunContext) -> None:
     except RuntimeError:
         room = None
     if room is None:
-        logger.warning("No room available; skipping rest_pose RPC")
+        logger.warning("No room available; skipping reset_pose RPC")
         return
     try:
         await room.local_participant.perform_rpc(
             destination_identity=OPERATOR_MOVE_TO_IDENTITY,
-            method="rest_pose",
+            method="reset_pose",
             payload="",
             response_timeout=_OPERATOR_RPC_TIMEOUT_S,
         )
     except RpcError as e:
         # Same failure mode as the other operator RPCs: log and continue so the
         # plan can still run if the move-to operator isn't connected.
-        logger.warning("rest_pose RPC failed: %s", e)
+        logger.warning("reset_pose RPC failed: %s", e)
 
 
 async def _execute_step(step: Action, room) -> None:
@@ -513,26 +513,26 @@ class PlannerToolset(AsyncToolset):
 
             await pub.set_plan([_describe_step(s) for s in plan.steps])
             await ctx.update("Getting into position")
-            await _send_to_rest_pose(ctx)
+            await _send_to_reset_pose(ctx)
             await execute_plan(ctx, plan, pub)
 
         return f"Completed: {task_description}"
 
     @function_tool()
-    async def rest_pose(self, ctx: AsyncRunContext) -> str:
-        """Move the robot's arms to their rest / home position.
+    async def reset_pose(self, ctx: AsyncRunContext) -> str:
+        """Move the robot's arms to their reset / home position.
 
-        Use when the user explicitly asks the robot to rest, reset, park, go
+        Use when the user explicitly asks the robot to reset, reset, park, go
         home, get out of the way, return to its starting position, or similar.
         Do NOT call this in response to tool-handling requests like
         "pick up X" or "put away Y" — `plan_and_execute` already homes the
         arms before running a plan.
         """
         ctx.disallow_interruptions()
-        logger.info("User-invoked rest_pose")
-        await ctx.update("Returning to rest pose")
-        await _send_to_rest_pose(ctx)
-        return "Robot is at rest."
+        logger.info("User-invoked reset_pose")
+        await ctx.update("Returning to reset pose")
+        await _send_to_reset_pose(ctx)
+        return "Robot is at reset."
 
 
 class Orchestrator(Agent):
@@ -556,10 +556,10 @@ class Orchestrator(Agent):
                 Use the `plan_and_execute` tool for any such request. The tool runs in the background and
                 narrates progress aloud as it works (planning, moving, picking up, etc.). After it returns,
                 briefly confirm completion in one short sentence (e.g. "Done!" or "All set, here you go.").
-                Do not restate the individual steps; they have already been narrated.
+                Do not resetate the individual steps; they have already been narrated.
 
-                If the user explicitly asks the robot to rest, reset, park, go home, return to its starting
-                position, or get out of the way, call the `rest_pose` tool instead. Do not call `rest_pose`
+                If the user explicitly asks the robot to reset, reset, park, go home, return to its starting
+                position, or get out of the way, call the `reset_pose` tool instead. Do not call `reset_pose`
                 before a pick-up/put-away request — `plan_and_execute` already homes the arms itself.
                 """
             ),
