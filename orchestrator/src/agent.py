@@ -611,11 +611,11 @@ class PlannerToolset(AsyncToolset):
         """Hand control to the MolmoAct2 VLA policy with a natural-language prompt.
 
         Reserved for requests where the user EXPLICITLY names `run_molmo` (e.g.
-        "pick this up using run_molmo", "use run_molmo to grab the screwdriver",
+        "pick this up using molmo", "use molmo to grab the screwdriver",
         "run molmo to put away the hammer"). Do NOT call this for ordinary
         pick-up / put-away / cleanup requests — those are handled by
         `plan_and_execute`. If the user just says "pick this up" without
-        naming run_molmo, use `plan_and_execute` instead.
+        naming molmo, use `plan_and_execute` instead.
 
         Args:
             prompt: A short natural-language instruction passed directly to the
