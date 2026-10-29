@@ -1,3 +1,6 @@
+> [!WARNING]
+> This example is archived and no longer maintained. For current examples, see [LiveKit Agents examples](https://github.com/livekit/agents/tree/main/examples) and [agent-starter-react](https://github.com/livekit-examples/agent-starter-react).
+
 # Team LiveKit: Desktop Robot Assistant
 
 [![Watch the demo](https://img.youtube.com/vi/6K4rvcU73uY/maxresdefault.jpg)](https://youtu.be/6K4rvcU73uY)
